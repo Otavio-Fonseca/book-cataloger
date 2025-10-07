@@ -1252,53 +1252,51 @@ def main():
         st.info("Digite o código de barras do livro para buscar suas informações automaticamente.")
         
         # Input manual - método padrão
-        with st.form("manual_entry_form"):
+        # Inicializar contador de sessão se não existir
+        if "form_counter" not in st.session_state:
+            st.session_state.form_counter = 0
+        
+        # Usar chave única baseada no contador para forçar limpeza do form
+        form_key = f"manual_entry_form_{st.session_state.form_counter}"
+        
+        with st.form(form_key):
             # Mostrar mensagem de sucesso se acabou de salvar
-            if st.session_state.get("focus_input", False):
+            if st.session_state.get("just_saved", False):
                 st.success("✅ Livro salvo com sucesso! Digite o próximo código de barras.")
-                st.session_state.focus_input = False
-                
-                # JavaScript para focar automaticamente no campo
-                st.markdown("""
-                <script>
-                setTimeout(function() {
-                    var input = document.querySelector('input[data-testid="textInput"]');
-                    if (input) {
-                        input.focus();
-                        input.select();
-                    }
-                }, 100);
-                </script>
-                """, unsafe_allow_html=True)
+                st.session_state.just_saved = False
             
-            # Usar chave dinâmica para limpar o campo quando necessário
-            input_key = "barcode_input"
-            if st.session_state.get("clear_input", False):
-                input_key = f"barcode_input_{st.session_state.get('input_counter', 0)}"
-                st.session_state.clear_input = False
-                st.session_state.input_counter = st.session_state.get('input_counter', 0) + 1
-            
-            manual_barcode = st.text_input("Código de Barras:", placeholder="Digite o código de barras do livro", key=input_key)
+            manual_barcode = st.text_input(
+                "Código de Barras:", 
+                placeholder="Digite o código de barras do livro",
+                key=f"barcode_input_{st.session_state.form_counter}"
+            )
             
             # Botões organizados: Buscar primeiro (recebe Enter do scanner), Limpar segundo
             col1, col2 = st.columns([2, 1])
             with col1:
-                if st.form_submit_button("🚀 Buscar Dados Online", type="primary"):
-                    if manual_barcode:
-                        st.session_state.codigo_barras = manual_barcode
-                        st.session_state.force_search = True
-                        st.rerun()
-                    else:
-                        st.warning("Por favor, digite um código de barras.")
+                buscar_button = st.form_submit_button("🚀 Buscar Dados Online", type="primary")
             with col2:
-                if st.form_submit_button("🗑️ Limpar", help="Limpar o campo de código de barras"):
-                    st.session_state.codigo_barras = None
-                    st.session_state.dados_livro = None
-                    st.session_state.sources_used = []
-                    st.session_state.from_autocomplete = False
-                    st.session_state.force_search = False
-                    st.session_state.clear_input = True
+                limpar_button = st.form_submit_button("🗑️ Limpar", help="Limpar o campo de código de barras")
+            
+            # Processar ações do formulário
+            if buscar_button:
+                if manual_barcode and manual_barcode.strip():
+                    st.session_state.codigo_barras = manual_barcode.strip()
+                    st.session_state.force_search = True
                     st.rerun()
+                else:
+                    st.warning("Por favor, digite um código de barras.")
+            
+            if limpar_button:
+                # Limpar dados e incrementar contador para resetar form
+                st.session_state.codigo_barras = None
+                st.session_state.dados_livro = None
+                st.session_state.sources_used = []
+                st.session_state.from_autocomplete = False
+                st.session_state.force_search = False
+                st.session_state.from_local = False
+                st.session_state.form_counter += 1
+                st.rerun()
         
         
         # Processar código de barras se disponível
@@ -1515,21 +1513,23 @@ def main():
                             st.balloons()
                             load_catalog_data.clear() # Invalida o cache
                             
-                            # Limpar dados da sessão e focar no input
-                            for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input"]:
+                            # Limpar dados da sessão
+                            for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input", "from_local"]:
                                 if key in st.session_state:
                                     del st.session_state[key]
                             
-                            # Marcar para focar no input após salvar e limpar o campo
-                            st.session_state.focus_input = True
-                            st.session_state.clear_input = True
+                            # Incrementar contador do form para resetar completamente
+                            st.session_state.form_counter += 1
+                            st.session_state.just_saved = True
                             st.rerun()
                     
                     elif clear_button:
                         # Limpar dados da sessão
-                        for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input"]:
+                        for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input", "from_local"]:
                             if key in st.session_state:
                                 del st.session_state[key]
+                        # Incrementar contador para resetar form
+                        st.session_state.form_counter += 1
                         st.rerun()
                     
                     elif search_again_button:
@@ -1646,16 +1646,22 @@ def main():
                             load_catalog_data.clear() # Invalida o cache
                             
                             # Limpar dados da sessão
-                            for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input"]:
+                            for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input", "from_local"]:
                                 if key in st.session_state:
                                     del st.session_state[key]
+                            
+                            # Incrementar contador do form para resetar
+                            st.session_state.form_counter += 1
+                            st.session_state.just_saved = True
                             st.rerun()
                     
                     elif manual_clear_button:
                         # Limpar dados da sessão
-                        for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input"]:
+                        for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input", "from_local"]:
                             if key in st.session_state:
                                 del st.session_state[key]
+                        # Incrementar contador do form
+                        st.session_state.form_counter += 1
                         st.rerun()
                     
                     elif manual_search_button:
@@ -1682,9 +1688,11 @@ def main():
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("🗑️ Limpar Formulário"):
-                    for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input"]:
+                    for key in ["codigo_barras", "dados_livro", "sources_used", "from_autocomplete", "force_search", "fallback_title_input", "from_local"]:
                         if key in st.session_state:
                             del st.session_state[key]
+                    # Incrementar contador do form
+                    st.session_state.form_counter += 1
                     st.rerun()
     
 
