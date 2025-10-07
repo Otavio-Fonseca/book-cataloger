@@ -270,85 +270,179 @@ class BookSearchEngine:
     # ==================== BUSCA COM IA ====================
     
     def search_with_ai(self, title: str, author: str = None, isbn: str = None) -> Optional[Dict]:
-        """Usa IA para encontrar dados do livro"""
+        """
+        Usa IA para encontrar dados do livro através de conhecimento do modelo
+        
+        A IA usa seu conhecimento treinado para fornecer informações sobre livros.
+        Funciona melhor para livros conhecidos e populares.
+        """
         try:
             # Verificar se OpenRouter está configurado
             if 'openrouter_config' not in st.session_state:
+                st.warning("⚠️ OpenRouter não configurado. Configure em 'Configurações'.")
                 return None
             
             config = st.session_state.openrouter_config
             if not config.get('enabled') or not config.get('api_key'):
+                st.warning("⚠️ API do OpenRouter não está ativa. Ative em 'Configurações'.")
                 return None
             
-            # Preparar prompt
-            search_info = f"Título: {title}"
-            if author:
-                search_info += f"\nAutor: {author}"
-            if isbn:
-                search_info += f"\nISBN: {isbn}"
+            # Preparar informações de busca
+            search_parts = []
+            if isbn and isbn != 'N/A':
+                search_parts.append(f"ISBN: {isbn}")
+            if title and title != 'N/A':
+                search_parts.append(f"Título: {title}")
+            if author and author != 'N/A':
+                search_parts.append(f"Autor: {author}")
             
-            prompt = f"""Você é um assistente de pesquisa de livros. Encontre os seguintes dados para o livro:
+            if not search_parts:
+                st.error("❌ Nenhuma informação disponível para busca com IA.")
+                return None
+            
+            search_info = '\n'.join(search_parts)
+            
+            # Prompt melhorado e mais específico
+            prompt = f"""Você é um bibliotecário especialista com acesso a informações sobre livros publicados.
+
+TAREFA: Forneça informações PRECISAS sobre o seguinte livro:
 
 {search_info}
 
-Retorne APENAS um objeto JSON com os seguintes campos (sem markdown, sem explicações):
+INSTRUÇÕES IMPORTANTES:
+1. Use seu conhecimento sobre livros para preencher os dados
+2. Se o livro for conhecido, forneça informações precisas
+3. Se NÃO conhecer o livro, retorne "N/A" nos campos desconhecidos
+4. NÃO invente dados - apenas forneça o que você SABE
+5. Para gênero, use termos em PORTUGUÊS (ex: Ficção, Romance, História, etc.)
+
+FORMATO DE RESPOSTA (apenas JSON, sem texto adicional):
+```json
 {{
-    "title": "título completo do livro",
-    "author": "nome do autor",
-    "publisher": "editora",
+    "title": "título completo oficial do livro em português",
+    "author": "nome completo do autor principal",
+    "publisher": "nome da editora brasileira (se souber)",
     "genre": "gênero literário em português",
     "year": "ano de publicação",
-    "isbn13": "ISBN-13 (se disponível)"
+    "isbn13": "ISBN-13 completo (13 dígitos)"
 }}
+```
 
-Se algum campo não for encontrado, use "N/A".
-"""
+IMPORTANTE: Retorne APENAS o JSON, sem explicações antes ou depois."""
             
             # Fazer chamada para OpenRouter
             session = requests.Session()
             session.headers.update({
                 'Authorization': f'Bearer {config["api_key"]}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://github.com/book-cataloger',
+                'X-Title': 'Book Cataloger'
             })
             
             model_name = config["model"].replace(" 🔍", "").strip()
+            
+            # Payload otimizado
             payload = {
                 "model": model_name,
                 "messages": [
-                    {"role": "system", "content": "Você é um assistente especializado em pesquisa bibliográfica. Retorne apenas JSON válido, sem markdown."},
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system", 
+                        "content": "Você é um bibliotecário especialista. Forneça informações precisas sobre livros quando souber, ou 'N/A' quando não souber. Retorne sempre JSON válido sem markdown."
+                    },
+                    {
+                        "role": "user", 
+                        "content": prompt
+                    }
                 ],
-                "max_tokens": 500,
-                "temperature": 0.1
+                "max_tokens": 600,
+                "temperature": 0.1,
+                "top_p": 1,
+                "frequency_penalty": 0,
+                "presence_penalty": 0
             }
             
-            response = session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                json=payload,
-                timeout=(10, 30)
-            )
+            # Adicionar response_format para modelos que suportam
+            if 'gpt-4' in model_name or 'gpt-3.5' in model_name:
+                payload["response_format"] = {"type": "json_object"}
             
-            if response.status_code == 200:
-                result_data = response.json()
-                content = result_data['choices'][0]['message']['content'].strip()
-                
-                # Tentar parsear JSON (remover markdown se houver)
-                if '```json' in content:
-                    content = content.split('```json')[1].split('```')[0].strip()
-                elif '```' in content:
-                    content = content.split('```')[1].split('```')[0].strip()
-                
+            # Debug: Mostrar que está buscando
+            with st.spinner(f"🤖 Consultando IA ({model_name})..."):
+                response = session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    json=payload,
+                    timeout=(10, 45)
+                )
+            
+            # Debug: Mostrar status
+            if response.status_code != 200:
+                st.error(f"❌ Erro na API: {response.status_code}")
+                st.error(f"Resposta: {response.text[:200]}")
+                return None
+            
+            result_data = response.json()
+            
+            # Verificar se há erro na resposta
+            if 'error' in result_data:
+                st.error(f"❌ Erro do OpenRouter: {result_data['error']}")
+                return None
+            
+            # Extrair conteúdo
+            if 'choices' not in result_data or not result_data['choices']:
+                st.error("❌ Resposta vazia da IA")
+                return None
+            
+            content = result_data['choices'][0]['message']['content'].strip()
+            
+            # Debug: Mostrar resposta bruta (opcional)
+            with st.expander("🔍 Debug: Resposta da IA", expanded=False):
+                st.code(content)
+            
+            # Limpar markdown se presente
+            if '```json' in content:
+                content = content.split('```json')[1].split('```')[0].strip()
+            elif '```' in content:
+                content = content.split('```')[1].split('```')[0].strip()
+            
+            # Tentar parsear JSON
+            try:
                 book_data = json.loads(content)
-                
-                # Adicionar fonte
-                book_data['source'] = 'IA (OpenRouter)'
-                
-                return book_data
+            except json.JSONDecodeError as je:
+                st.error(f"❌ Erro ao parsear JSON da IA: {je}")
+                st.code(content)
+                return None
+            
+            # Validar campos obrigatórios
+            if not isinstance(book_data, dict):
+                st.error("❌ IA não retornou um objeto JSON válido")
+                return None
+            
+            # Mapear campos e adicionar fonte
+            result = {
+                'title': book_data.get('title', 'N/A'),
+                'author': book_data.get('author', 'N/A'),
+                'publisher': book_data.get('publisher', 'N/A'),
+                'genre': book_data.get('genre', 'N/A'),
+                'year': book_data.get('year', 'N/A'),
+                'cover_url': None,  # IA não fornece URL
+                'source': f'IA ({model_name})'
+            }
+            
+            # Mostrar resultado
+            st.success(f"✅ IA retornou dados! Modelo: {model_name}")
+            
+            return result
         
-        except Exception as e:
+        except requests.exceptions.Timeout:
+            st.error("❌ Timeout na chamada da IA. Tente novamente.")
             return None
-        
-        return None
+        except requests.exceptions.RequestException as e:
+            st.error(f"❌ Erro na requisição: {str(e)}")
+            return None
+        except Exception as e:
+            st.error(f"❌ Erro na busca com IA: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+            return None
     
     # ==================== ORQUESTRAÇÃO PRINCIPAL ====================
     
