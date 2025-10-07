@@ -101,16 +101,21 @@ def excluir_livro(livro_id):
 st.title("✍️ Editar ou Excluir Livro")
 st.markdown("---")
 
+# Informação do operador atual
+operador_atual = get_operador_nome()
+st.info(f"👤 **Operador:** {operador_atual} | Você pode editar apenas os livros catalogados por você.")
+
 # Seção de busca
-st.header("🔍 Buscar Livro")
+st.header("🔍 Buscar e Editar Meus Livros")
 
 col1, col2, col3 = st.columns([3, 1, 1])
 
 with col1:
     termo_busca = st.text_input(
-        "Digite o título ou código de barras do livro:",
+        "Digite o título ou código de barras:",
         placeholder="Ex: Harry Potter ou 9788532530802",
-        key="termo_busca"
+        key="termo_busca",
+        help="Busca apenas entre os livros que você catalogou"
     )
 
 with col2:
@@ -121,52 +126,67 @@ with col2:
     )
 
 with col3:
-    filtrar_operador = st.checkbox(
-        "Apenas meus livros",
-        value=True,
-        help="Marque para ver apenas os livros catalogados por você"
-    )
+    st.write("")  # Espaçamento
+    if st.button("📚 Todos", help="Ver todos os seus livros", use_container_width=True):
+        # Buscar todos os livros do operador
+        try:
+            response = supabase.table('livro').select("""
+                id,
+                codigo_barras,
+                titulo,
+                autor,
+                editora,
+                created_at,
+                operador_nome,
+                genero:genero-id(id, nome)
+            """).eq('operador_nome', operador_atual).order('created_at', desc=True).execute()
+            
+            st.session_state.resultados_busca = response.data if response.data else []
+            st.session_state.termo_buscado = "todos os livros"
+        except Exception as e:
+            st.error(f"Erro ao carregar livros: {e}")
 
 if st.button("🔍 Buscar", type="primary"):
     if termo_busca:
-        st.session_state.resultados_busca = buscar_livros(termo_busca, tipo_busca, filtrar_operador)
+        # Sempre filtrar por operador (segurança)
+        st.session_state.resultados_busca = buscar_livros(termo_busca, tipo_busca, filtrar_por_operador=True)
         st.session_state.termo_buscado = termo_busca
-        st.session_state.filtrou_operador = filtrar_operador
     else:
-        st.warning("Por favor, digite um termo de busca.")
+        st.warning("Por favor, digite um termo de busca ou clique em 'Todos' para ver todos os seus livros.")
 
 # Exibir resultados da busca
 if 'resultados_busca' in st.session_state and st.session_state.resultados_busca:
     st.markdown("---")
-    st.subheader(f"📚 Resultados da Busca: '{st.session_state.termo_buscado}'")
+    st.subheader(f"📚 Seus Livros: '{st.session_state.termo_buscado}'")
+    st.success(f"✅ **{len(st.session_state.resultados_busca)}** livro(s) encontrado(s)")
     
-    # Mostrar informação sobre o filtro
-    if st.session_state.get('filtrou_operador', False):
-        st.info(f"**{len(st.session_state.resultados_busca)}** livro(s) encontrado(s) **catalogados por você** ({get_operador_nome()})")
-    else:
-        st.info(f"**{len(st.session_state.resultados_busca)}** livro(s) encontrado(s) (todos os operadores)")
+    st.markdown("### 📝 Clique em um livro para editar")
     
     for idx, livro in enumerate(st.session_state.resultados_busca):
         genero_nome = livro.get('genero', {}).get('nome', 'N/A') if livro.get('genero') else 'N/A'
         
-        with st.expander(f"📖 {livro['titulo']} - {livro['autor']}", expanded=False):
-            col1, col2 = st.columns([3, 1])
+        # Card de livro com destaque visual
+        with st.container():
+            col1, col2, col3 = st.columns([3, 2, 1])
             
             with col1:
-                st.write(f"**Código de Barras:** {livro.get('codigo_barras', 'N/A')}")
-                st.write(f"**Autor:** {livro.get('autor', 'N/A')}")
-                st.write(f"**Editora:** {livro.get('editora', 'N/A')}")
-                st.write(f"**Gênero:** {genero_nome}")
-                st.write(f"**Operador:** {livro.get('operador_nome', 'N/A')}")
-                st.write(f"**Catalogado em:** {livro.get('created_at', 'N/A')}")
+                st.markdown(f"#### 📖 {livro['titulo']}")
+                st.caption(f"✍️ {livro.get('autor', 'N/A')} | 🏢 {livro.get('editora', 'N/A')}")
             
             with col2:
-                if st.button("✏️ Carregar para Edição", key=f"edit_{livro['id']}_{idx}"):
+                st.write(f"**ISBN:** {livro.get('codigo_barras', 'N/A')}")
+                st.write(f"**Gênero:** {genero_nome}")
+            
+            with col3:
+                if st.button("✏️ Editar", key=f"edit_{livro['id']}_{idx}", type="primary", use_container_width=True):
                     st.session_state.livro_selecionado = livro
                     st.rerun()
+            
+            st.markdown("---")
 
 elif 'resultados_busca' in st.session_state and not st.session_state.resultados_busca:
-    st.warning(f"Nenhum livro encontrado para '{st.session_state.termo_buscado}'")
+    st.warning(f"❌ Nenhum livro **seu** encontrado para '{st.session_state.termo_buscado}'")
+    st.info("💡 **Dica:** A busca mostra apenas os livros catalogados por você.")
 
 # Formulário de edição
 if 'livro_selecionado' in st.session_state:
@@ -229,7 +249,8 @@ if 'livro_selecionado' in st.session_state:
             novo_operador = st.text_input(
                 "Operador:",
                 value=livro.get('operador_nome', ''),
-                help="Nome do operador que catalogou"
+                disabled=True,
+                help="Campo bloqueado - operador não pode ser alterado"
             )
         
         st.markdown("---")
@@ -307,21 +328,27 @@ if 'livro_selecionado' in st.session_state:
 # Instruções
 with st.expander("ℹ️ Como usar esta página", expanded=False):
     st.markdown("""
-    **Passos para editar um livro:**
+    **Como editar seus livros:**
     
-    1. 🔍 Use o campo de busca para encontrar o livro (por título ou código de barras)
-    2. 📖 Clique em um dos resultados para ver os detalhes
-    3. ✏️ Clique em "Carregar para Edição" no livro desejado
-    4. 📝 Edite os campos necessários no formulário
-    5. 💾 Clique em "Salvar Alterações" para confirmar
+    1. 🔍 **Buscar:** Digite o título ou código de barras do livro
+    2. 📚 **Resultados:** Veja a lista de livros que você catalogou
+    3. ✏️ **Editar:** Clique no botão "Editar" do livro desejado
+    4. 📝 **Modificar:** Altere os campos necessários no formulário
+    5. 💾 **Salvar:** Clique em "Salvar Alterações" para confirmar
     
     **Para excluir um livro:**
     
-    1. Siga os passos 1-3 acima
-    2. 🗑️ Clique em "Excluir Livro"
-    3. ✅ Marque a caixa de confirmação
+    1. Clique em "Editar" no livro que deseja excluir
+    2. 🗑️ Clique em "Excluir Livro" no formulário
+    3. ✅ Marque a caixa "Sim, tenho certeza..."
     4. 🗑️ Clique em "CONFIRMAR EXCLUSÃO"
     
-    ⚠️ **Importante:** A exclusão é permanente e não pode ser desfeita!
+    **⚠️ Regras Importantes:**
+    - ✅ Você vê **apenas os livros catalogados por você**
+    - ✅ Você pode **editar todos os campos**, exceto o operador
+    - ❌ **A exclusão é permanente** e não pode ser desfeita!
+    - 🔒 O campo **"Operador" é bloqueado** para segurança
+    
+    **💡 Dica:** Para catalogar novos livros, use a página principal!
     """)
 
