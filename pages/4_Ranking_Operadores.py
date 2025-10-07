@@ -602,10 +602,26 @@ else:
     inicio_semana = hoje - timedelta(days=hoje.weekday())
     inicio_mes = hoje.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    # Filtrar livros da semana e do mês
-    # df_total já tem created_at convertido para datetime no início
-    livros_semana = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_semana)])
-    livros_mes = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_mes)])
+    # Filtrar livros da semana e do mês com conversão segura
+    try:
+        # Criar cópia e garantir conversão de datetime
+        df_metas = df_total.copy()
+        df_metas['created_at'] = pd.to_datetime(df_metas['created_at'])
+        
+        # Converter timestamps para timezone-aware se necessário
+        inicio_semana_ts = pd.Timestamp(inicio_semana).tz_localize(None)
+        inicio_mes_ts = pd.Timestamp(inicio_mes).tz_localize(None)
+        
+        # Remover timezone de created_at se tiver
+        if df_metas['created_at'].dt.tz is not None:
+            df_metas['created_at'] = df_metas['created_at'].dt.tz_localize(None)
+        
+        livros_semana = len(df_metas[df_metas['created_at'] >= inicio_semana_ts])
+        livros_mes = len(df_metas[df_metas['created_at'] >= inicio_mes_ts])
+    except Exception as e:
+        st.error(f"Erro ao calcular metas: {e}")
+        livros_semana = 0
+        livros_mes = 0
     
     col1, col2 = st.columns(2)
     
