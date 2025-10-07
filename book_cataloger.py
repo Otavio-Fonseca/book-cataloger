@@ -6,7 +6,6 @@ from pyzbar import pyzbar
 from PIL import Image
 import re
 import requests
-import csv
 import os
 from datetime import datetime
 import pandas as pd
@@ -17,55 +16,17 @@ import subprocess
 import openai
 import json
 import configparser
+from supabase import create_client, Client
 
-# --- CÓDIGO DE VERIFICAÇÃO DE CONEXÃO ---
-st.set_page_config(layout="wide") # Faça isso antes de qualquer outro comando st.
-st.title("Diagnóstico de Conexão com o Banco de Dados")
-
+# Inicializar cliente Supabase
 try:
-    # Tenta inicializar a conexão usando o segredo "supabase"
-    conn = st.connection("supabase", type="sql")
-
-    st.success("✅ **SUCESSO!** A conexão com o banco de dados Supabase foi estabelecida.")
-    st.info("O segredo `connections.supabase` foi lido corretamente.")
-
-    # Teste de leitura: Tenta executar uma consulta simples.
-    # Esta consulta conta quantas linhas existem na tabela "Genero".
-    # ATENÇÃO: Use "Genero" com 'G' maiúsculo, como criamos no Supabase.
-    try:
-        df = conn.query('SELECT COUNT(*) FROM public."Genero";')
-        num_generos = df.iloc[0][0]
-        st.success(f"✅ **TESTE DE LEITURA OK!** A consulta ao banco de dados foi executada.")
-        st.write(f"Encontradas **{num_generos}** linhas na tabela 'Genero'.")
-        st.balloons()
-
-    except Exception as e:
-        st.error("❌ **ERRO NO TESTE DE LEITURA!** A conexão foi estabelecida, mas a consulta falhou.")
-        st.warning("**Possíveis causas:**")
-        st.markdown("""
-            - O nome da tabela está errado no código (deve ser `public."Genero"` com aspas e 'G' maiúsculo).
-            - A tabela 'Genero' ainda não foi criada no Supabase.
-            - Problemas de permissão no banco de dados.
-        """)
-        st.code(f"Detalhes do erro: {e}")
-
+    url: str = st.secrets["supabase"]["url"]
+    key: str = st.secrets["supabase"]["key"]
+    supabase: Client = create_client(url, key)
 except Exception as e:
-    st.error("❌ **FALHA NA CONEXÃO!** Não foi possível conectar ao banco de dados Supabase.")
-    st.warning("**Verifique os seguintes pontos:**")
-    st.markdown("""
-        1.  **Secrets do Streamlit:** Você adicionou o segredo no formato correto em "Settings" > "Secrets"?
-            ```toml
-            [connections.supabase]
-            url="postgresql://..."
-            ```
-        2.  **URL de Conexão:** A URL que você montou está 100% correta? Verifique cada parte: `usuário`, `senha`, `host`, `porta`. Um único caractere errado pode causar a falha.
-        3.  **Senha:** A senha na URL é exatamente a mesma que você definiu (ou resetou) no Supabase? Cuidado com caracteres especiais.
-    """)
-    st.code(f"Detalhes do erro: {e}")
-
-st.markdown("---")
-st.header("O restante da sua aplicação será carregado abaixo após o diagnóstico.")
-# --- FIM DO CÓDIGO DE VERIFICAÇÃO ---
+    st.error("Erro ao conectar com o Supabase. Verifique os segredos do Streamlit.")
+    st.code(e)
+    st.stop()
 
 
 # Configuração da página
@@ -614,24 +575,29 @@ def search_openlibrary_works(barcode):
     return None
 
 def search_local_catalog_first(barcode):
-    """Busca primeiro no catálogo local, depois nas APIs se necessário"""
-    # 1. PRIMEIRO: Verificar se já existe no catálogo local
-    local_matches = check_existing_records(barcode=barcode)
-    
-    if local_matches:
-        # Livro já existe no catálogo local
-        local_data = local_matches[0]  # Pegar o primeiro match
-        return {
-            'title': local_data.get('Titulo', 'N/A'),
-            'author': local_data.get('Autor', 'N/A'),
-            'publisher': local_data.get('Editora', 'N/A'),
-            'genre': local_data.get('Genero', 'N/A'),
-            'sources': ['catálogo_local'],
-            'from_local': True
-        }
-    
-    # 2. SEGUNDO: Se não existe localmente, buscar nas APIs
-    return search_multiple_sources(barcode)
+    """Busca primeiro no catálogo do Supabase, depois nas APIs se necessário"""
+    try:
+        # 1. PRIMEIRO: Verificar se já existe no banco de dados Supabase
+        response = supabase.table('Livro').select("*").eq('isbn13', barcode).limit(1).execute()
+        
+        if response.data:
+            livro_encontrado = response.data[0]
+            # Retornar dados no formato esperado pelo resto do app
+            return {
+                'title': livro_encontrado.get('titulo', 'N/A'),
+                'author': livro_encontrado.get('autor', 'N/A'),
+                'publisher': livro_encontrado.get('editora', 'N/A'),
+                'genre': livro_encontrado.get('genero', 'N/A'),
+                'sources': ['catálogo_local'],
+                'from_local': True
+            }
+        else:
+            # 2. SEGUNDO: Se não existe localmente, buscar nas APIs
+            return search_multiple_sources(barcode)
+    except Exception as e:
+        st.error(f"Erro ao buscar no catálogo local: {e}")
+        # Em caso de erro, tentar buscar nas APIs
+        return search_multiple_sources(barcode)
 
 def search_multiple_sources(barcode):
     """Busca dados em múltiplas fontes usando o código de barras com coleta melhorada de editora"""
@@ -679,16 +645,40 @@ def search_multiple_sources(barcode):
 # Funções de otimização de pesquisa local
 @st.cache_data(ttl=3600) # Cache por 1 hora
 def load_catalog_data():
-    csv_file = "catalogo_livros.csv"
-    if os.path.exists(csv_file):
-        try:
-            return pd.read_csv(csv_file)
-        except pd.errors.EmptyDataError:
+    """Carrega dados do catálogo do Supabase"""
+    try:
+        response = supabase.table('Livro').select("*").execute()
+        
+        if response.data:
+            # Converter para DataFrame do pandas
+            df = pd.DataFrame(response.data)
+            
+            # Mapear nomes de colunas do Supabase para os esperados pela aplicação
+            column_mapping = {
+                'isbn13': 'Codigo_Barras',
+                'titulo': 'Titulo',
+                'autor': 'Autor',
+                'editora': 'Editora',
+                'genero': 'Genero',
+                'data_catalogacao': 'Data_Catalogacao'
+            }
+            
+            # Renomear colunas se necessário
+            df = df.rename(columns=column_mapping)
+            
+            # Selecionar apenas as colunas esperadas (caso hajam outras)
+            expected_columns = ["Codigo_Barras", "Titulo", "Autor", "Editora", "Genero", "Data_Catalogacao"]
+            available_columns = [col for col in expected_columns if col in df.columns]
+            
+            return df[available_columns] if available_columns else pd.DataFrame(columns=expected_columns)
+        else:
             return pd.DataFrame(columns=["Codigo_Barras", "Titulo", "Autor", "Editora", "Genero", "Data_Catalogacao"])
-    return pd.DataFrame(columns=["Codigo_Barras", "Titulo", "Autor", "Editora", "Genero", "Data_Catalogacao"])
+    except Exception as e:
+        st.error(f"Erro ao carregar dados do catálogo: {e}")
+        return pd.DataFrame(columns=["Codigo_Barras", "Titulo", "Autor", "Editora", "Genero", "Data_Catalogacao"])
 
 def check_existing_records(barcode=None, title=None):
-    """Verifica registros existentes no CSV"""
+    """Verifica registros existentes no banco de dados Supabase"""
     df = load_catalog_data()
     matches = []
     
@@ -727,28 +717,37 @@ def check_existing_records(barcode=None, title=None):
         return []
 
 def save_to_csv(data, quantity=1):
-    """Salva os dados no arquivo CSV, repetindo o registro conforme a quantidade"""
-    csv_file = 'catalogo_livros.csv'
-    file_exists = os.path.isfile(csv_file)
-    
-    with open(csv_file, 'a', newline='', encoding='utf-8') as file:
-        fieldnames = ['Codigo_Barras', 'Titulo', 'Autor', 'Editora', 'Genero', 'Data_Catalogacao']
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+    """Salva um ou mais registros de livro no banco de dados Supabase"""
+    try:
+        # Prepara uma lista de dicionários para inserção
+        # O campo 'data_catalogacao' é preenchido automaticamente pelo Supabase
+        registros_para_inserir = []
+        for _ in range(quantity):
+            novo_registro = {
+                'isbn13': data['barcode'],
+                'titulo': data['title'],
+                'autor': data['author'],
+                'editora': data['publisher'],
+                'genero': data['genre']
+                # data_catalogacao será preenchido automaticamente
+            }
+            registros_para_inserir.append(novo_registro)
+
+        # Insere a lista de registros na tabela 'Livro'
+        response = supabase.table('Livro').insert(registros_para_inserir).execute()
+
+        # Verificação de erro
+        if not response.data:
+            st.error("Falha ao salvar os dados no Supabase.")
+            return False
         
-        if not file_exists:
-            writer.writeheader()
-        
-        # Repetir o registro conforme a quantidade especificada
-        for i in range(quantity):
-            writer.writerow({
-                'Codigo_Barras': data['barcode'],
-                'Titulo': data['title'],
-                'Autor': data['author'],
-                'Editora': data['publisher'],
-                'Genero': data['genre'],
-                'Data_Catalogacao': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-    load_catalog_data.clear() # Invalida o cache após salvar no CSV
+        # Invalida o cache após salvar
+        load_catalog_data.clear()
+        return True
+
+    except Exception as e:
+        st.error(f"Erro ao salvar no banco de dados: {e}")
+        return False
 
 # Opções de gêneros disponíveis
 GENEROS_DISPONIVEIS = [
