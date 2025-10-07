@@ -157,6 +157,11 @@ st.markdown("""
 # Carregar dados
 df_total = get_ranking_data()
 
+# Garantir que created_at é datetime LOGO APÓS carregar
+if not df_total.empty and 'created_at' in df_total.columns:
+    if not pd.api.types.is_datetime64_any_dtype(df_total['created_at']):
+        df_total['created_at'] = pd.to_datetime(df_total['created_at'])
+
 if df_total.empty:
     st.info("📚 Nenhum livro catalogado desde o início da competição.")
     st.markdown("**Data de início:** 07/10/2025")
@@ -402,12 +407,8 @@ else:
     st.header("📈 Evolução da Competição")
     
     # Agrupar por operador e data
+    # df_total já tem created_at convertido para datetime no início
     df_daily = df_total.copy()
-    
-    # Garantir que created_at é datetime
-    if 'created_at' in df_daily.columns and not pd.api.types.is_datetime64_any_dtype(df_daily['created_at']):
-        df_daily['created_at'] = pd.to_datetime(df_daily['created_at'])
-    
     df_daily['data'] = df_daily['created_at'].dt.date
     
     # Pivot para ter cada operador como série
@@ -601,16 +602,10 @@ else:
     inicio_semana = hoje - timedelta(days=hoje.weekday())
     inicio_mes = hoje.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    # Garantir que created_at é datetime antes de comparar
-    if 'created_at' in df_total.columns:
-        if not pd.api.types.is_datetime64_any_dtype(df_total['created_at']):
-            df_total['created_at'] = pd.to_datetime(df_total['created_at'])
-        
-        livros_semana = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_semana)])
-        livros_mes = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_mes)])
-    else:
-        livros_semana = 0
-        livros_mes = 0
+    # Filtrar livros da semana e do mês
+    # df_total já tem created_at convertido para datetime no início
+    livros_semana = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_semana)])
+    livros_mes = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_mes)])
     
     col1, col2 = st.columns(2)
     
