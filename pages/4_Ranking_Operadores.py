@@ -100,7 +100,15 @@ def calculate_streak(df_operador):
     
     # Extrair apenas as datas (sem hora)
     df_operador = df_operador.copy()
-    df_operador['data'] = df_operador['created_at'].dt.date
+    
+    # Garantir que created_at é datetime
+    if 'created_at' in df_operador.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df_operador['created_at']):
+            df_operador['created_at'] = pd.to_datetime(df_operador['created_at'])
+        
+        df_operador['data'] = df_operador['created_at'].dt.date
+    else:
+        return 0
     
     # Datas únicas ordenadas
     datas_unicas = sorted(df_operador['data'].unique(), reverse=True)
@@ -395,6 +403,11 @@ else:
     
     # Agrupar por operador e data
     df_daily = df_total.copy()
+    
+    # Garantir que created_at é datetime
+    if 'created_at' in df_daily.columns and not pd.api.types.is_datetime64_any_dtype(df_daily['created_at']):
+        df_daily['created_at'] = pd.to_datetime(df_daily['created_at'])
+    
     df_daily['data'] = df_daily['created_at'].dt.date
     
     # Pivot para ter cada operador como série
@@ -588,8 +601,16 @@ else:
     inicio_semana = hoje - timedelta(days=hoje.weekday())
     inicio_mes = hoje.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    livros_semana = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_semana)])
-    livros_mes = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_mes)])
+    # Garantir que created_at é datetime antes de comparar
+    if 'created_at' in df_total.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df_total['created_at']):
+            df_total['created_at'] = pd.to_datetime(df_total['created_at'])
+        
+        livros_semana = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_semana)])
+        livros_mes = len(df_total[df_total['created_at'] >= pd.Timestamp(inicio_mes)])
+    else:
+        livros_semana = 0
+        livros_mes = 0
     
     col1, col2 = st.columns(2)
     
