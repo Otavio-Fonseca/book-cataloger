@@ -18,6 +18,7 @@ import json
 import configparser
 from supabase import create_client, Client
 from utils_auth import check_login, get_operador_nome, show_user_info
+from book_search_engine import create_search_engine
 
 # Inicializar cliente Supabase
 try:
@@ -28,6 +29,9 @@ except Exception as e:
     st.error("Erro ao conectar com o Supabase. Verifique os segredos do Streamlit.")
     st.code(e)
     st.stop()
+
+# Inicializar motor de busca avançado
+search_engine = create_search_engine(supabase)
 
 
 # Configuração da página
@@ -575,12 +579,16 @@ def search_openlibrary_works(barcode):
         return None
     return None
 
-def search_local_catalog_first(barcode):
-    """Busca primeiro no catálogo do Supabase, depois nas APIs se necessário"""
+def search_local_catalog_first(barcode, use_ai_search=False):
+    """
+    Busca primeiro no catálogo local, depois usa o motor de busca avançado
+    
+    Args:
+        barcode: Código de barras/ISBN do livro
+        use_ai_search: Se True, usa IA como último fallback
+    """
     try:
         # 1. PRIMEIRO: Verificar se já existe no banco de dados Supabase
-        # Fazer SELECT com JOIN para pegar o nome do gênero
-        # Para colunas com hífen, usamos a sintaxe: alias:coluna_foreign_key(campos)
         response = supabase.table('livro').select("""
             id,
             codigo_barras,
@@ -598,16 +606,23 @@ def search_local_catalog_first(barcode):
                 'author': livro_encontrado.get('autor', 'N/A'),
                 'publisher': livro_encontrado.get('editora', 'N/A'),
                 'genre': livro_encontrado.get('genero', {}).get('nome', 'N/A') if livro_encontrado.get('genero') else 'N/A',
+                'year': 'N/A',
+                'cover_url': None,
                 'sources': ['catálogo_local'],
-                'from_local': True
+                'from_local': True,
+                'from_cache': False
             }
         else:
-            # 2. SEGUNDO: Se não existe localmente, buscar nas APIs
-            return search_multiple_sources(barcode)
+            # 2. SEGUNDO: Se não existe localmente, usar motor de busca avançado
+            result = search_engine.search_book(isbn=barcode, use_ai=use_ai_search)
+            result['from_local'] = False
+            return result
     except Exception as e:
         st.error(f"Erro ao buscar no catálogo local: {e}")
-        # Em caso de erro, tentar buscar nas APIs
-        return search_multiple_sources(barcode)
+        # Em caso de erro, tentar buscar com motor de busca
+        result = search_engine.search_book(isbn=barcode, use_ai=use_ai_search)
+        result['from_local'] = False
+        return result
 
 def search_multiple_sources(barcode):
     """Busca dados em múltiplas fontes usando o código de barras com coleta melhorada de editora"""
@@ -1271,11 +1286,21 @@ def main():
                 key=f"barcode_input_{st.session_state.form_counter}"
             )
             
-            # Botões organizados: Buscar primeiro (recebe Enter do scanner), Limpar segundo
-            col1, col2 = st.columns([2, 1])
+            # Botões organizados
+            col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
                 buscar_button = st.form_submit_button("🚀 Buscar Dados Online", type="primary")
             with col2:
+                # Verificar se IA está disponível
+                config = get_openrouter_config()
+                ai_disponivel = config.get('enabled', False) and config.get('api_key', '')
+                
+                if ai_disponivel:
+                    buscar_ia_button = st.form_submit_button("🤖 Buscar com IA", help="Busca avançada usando Inteligência Artificial")
+                else:
+                    st.form_submit_button("🤖 IA (Desativada)", disabled=True, help="Configure a API do OpenRouter em Configurações")
+                    buscar_ia_button = False
+            with col3:
                 limpar_button = st.form_submit_button("🗑️ Limpar", help="Limpar o campo de código de barras")
             
             # Processar ações do formulário
@@ -1283,6 +1308,16 @@ def main():
                 if manual_barcode and manual_barcode.strip():
                     st.session_state.codigo_barras = manual_barcode.strip()
                     st.session_state.force_search = True
+                    st.session_state.use_ai_search = False
+                    st.rerun()
+                else:
+                    st.warning("Por favor, digite um código de barras.")
+            
+            if buscar_ia_button:
+                if manual_barcode and manual_barcode.strip():
+                    st.session_state.codigo_barras = manual_barcode.strip()
+                    st.session_state.force_search = True
+                    st.session_state.use_ai_search = True
                     st.rerun()
                 else:
                     st.warning("Por favor, digite um código de barras.")
@@ -1295,6 +1330,7 @@ def main():
                 st.session_state.from_autocomplete = False
                 st.session_state.force_search = False
                 st.session_state.from_local = False
+                st.session_state.use_ai_search = False
                 st.session_state.form_counter += 1
                 st.rerun()
         
@@ -1313,25 +1349,46 @@ def main():
                 from_autocomplete = st.session_state.from_autocomplete
                 # Verificar se veio do catálogo local
                 from_local = st.session_state.get("from_local", False)
+                from_cache = st.session_state.get("from_cache", False)
             else:
-                with st.spinner("Buscando dados do livro..."):
-                    dados_livro = search_local_catalog_first(codigo_barras)
-                    sources_used = dados_livro.pop("sources")
+                # Verificar se deve usar busca com IA
+                use_ai = st.session_state.get("use_ai_search", False)
+                
+                # Mensagem diferente se usando IA
+                if use_ai:
+                    spinner_msg = "🤖 Buscando com IA e múltiplas fontes..."
+                else:
+                    spinner_msg = "🔍 Buscando dados do livro em múltiplas fontes..."
+                
+                with st.spinner(spinner_msg):
+                    dados_livro = search_local_catalog_first(codigo_barras, use_ai_search=use_ai)
+                    sources_used = dados_livro.pop("sources", [])
                     from_local = dados_livro.pop("from_local", False)
+                    from_cache = dados_livro.pop("from_cache", False)
                     st.session_state.dados_livro = dados_livro
                     st.session_state.sources_used = sources_used
                     st.session_state.from_local = from_local
+                    st.session_state.from_cache = from_cache
                     st.session_state.force_search = False
+                    st.session_state.use_ai_search = False
                     from_autocomplete = False
             
             if dados_livro and dados_livro["title"] != "N/A":
                 if from_local:
                     st.success("✅ Dados do livro encontrados no catálogo local!")
                     st.info("📚 **Este livro já estava catalogado anteriormente.**")
+                elif from_cache:
+                    st.success("✅ Dados encontrados no cache (busca anterior)!")
+                    st.info("⚡ **Resultado instantâneo!** Estes dados foram obtidos em uma busca anterior.")
                 else:
                     st.success("✅ Dados do livro encontrados online!")
+                
                 if from_autocomplete:
                     st.info("Este livro já existe no catálogo (sugestão do autocomplete).")
+                
+                # Mostrar fontes usadas
+                if sources_used and not from_local:
+                    st.caption(f"📡 **Fontes consultadas:** {', '.join(sources_used)}")
                 
                 # Preview removido para interface mais limpa
                 
