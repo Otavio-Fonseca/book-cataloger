@@ -578,7 +578,16 @@ def search_local_catalog_first(barcode):
     """Busca primeiro no catálogo do Supabase, depois nas APIs se necessário"""
     try:
         # 1. PRIMEIRO: Verificar se já existe no banco de dados Supabase
-        response = supabase.table('Livro').select("*").eq('isbn13', barcode).limit(1).execute()
+        # Fazer SELECT com JOIN para pegar o nome do gênero
+        # Para colunas com hífen, usamos a sintaxe: alias:coluna_foreign_key(campos)
+        response = supabase.table('livro').select("""
+            id,
+            codigo_barras,
+            titulo,
+            autor,
+            editora,
+            genero:genero-id(nome)
+        """).eq('codigo_barras', barcode).limit(1).execute()
         
         if response.data:
             livro_encontrado = response.data[0]
@@ -587,7 +596,7 @@ def search_local_catalog_first(barcode):
                 'title': livro_encontrado.get('titulo', 'N/A'),
                 'author': livro_encontrado.get('autor', 'N/A'),
                 'publisher': livro_encontrado.get('editora', 'N/A'),
-                'genre': livro_encontrado.get('genero', 'N/A'),
+                'genre': livro_encontrado.get('genero', {}).get('nome', 'N/A') if livro_encontrado.get('genero') else 'N/A',
                 'sources': ['catálogo_local'],
                 'from_local': True
             }
@@ -642,35 +651,63 @@ def search_multiple_sources(barcode):
     
     return combined_data
 
+# Funções auxiliares para gerenciamento de gêneros
+def get_or_create_genero(nome_genero):
+    """Busca um gênero pelo nome ou cria se não existir. Retorna o ID do gênero."""
+    try:
+        # Primeiro, tentar encontrar o gênero existente
+        response = supabase.table('genero').select("id, nome").eq('nome', nome_genero).execute()
+        
+        if response.data and len(response.data) > 0:
+            # Gênero já existe, retornar o ID
+            return response.data[0]['id']
+        else:
+            # Gênero não existe, criar novo
+            insert_response = supabase.table('genero').insert({'nome': nome_genero}).execute()
+            if insert_response.data and len(insert_response.data) > 0:
+                return insert_response.data[0]['id']
+            else:
+                st.error(f"Erro ao criar gênero '{nome_genero}'")
+                return None
+    except Exception as e:
+        st.error(f"Erro ao buscar/criar gênero: {e}")
+        return None
+
 # Funções de otimização de pesquisa local
 @st.cache_data(ttl=3600) # Cache por 1 hora
 def load_catalog_data():
-    """Carrega dados do catálogo do Supabase"""
+    """Carrega dados do catálogo do Supabase com JOIN na tabela genero"""
     try:
-        response = supabase.table('Livro').select("*").execute()
+        # Fazer SELECT com JOIN para pegar o nome do gênero
+        # Nota: O Supabase usa sintaxe especial para JOINs
+        # Para colunas com hífen, usamos a sintaxe: alias:coluna_foreign_key(campos)
+        response = supabase.table('livro').select("""
+            id,
+            codigo_barras,
+            titulo,
+            autor,
+            editora,
+            created_at,
+            genero:genero-id(nome)
+        """).execute()
         
         if response.data:
-            # Converter para DataFrame do pandas
-            df = pd.DataFrame(response.data)
+            # Processar os dados para formato esperado
+            processed_data = []
+            for row in response.data:
+                processed_row = {
+                    'Codigo_Barras': row.get('codigo_barras', 'N/A'),
+                    'Titulo': row.get('titulo', 'N/A'),
+                    'Autor': row.get('autor', 'N/A'),
+                    'Editora': row.get('editora', 'N/A'),
+                    'Genero': row.get('genero', {}).get('nome', 'N/A') if row.get('genero') else 'N/A',
+                    'Data_Catalogacao': row.get('created_at', '')
+                }
+                processed_data.append(processed_row)
             
-            # Mapear nomes de colunas do Supabase para os esperados pela aplicação
-            column_mapping = {
-                'isbn13': 'Codigo_Barras',
-                'titulo': 'Titulo',
-                'autor': 'Autor',
-                'editora': 'Editora',
-                'genero': 'Genero',
-                'data_catalogacao': 'Data_Catalogacao'
-            }
-            
-            # Renomear colunas se necessário
-            df = df.rename(columns=column_mapping)
-            
-            # Selecionar apenas as colunas esperadas (caso hajam outras)
-            expected_columns = ["Codigo_Barras", "Titulo", "Autor", "Editora", "Genero", "Data_Catalogacao"]
-            available_columns = [col for col in expected_columns if col in df.columns]
-            
-            return df[available_columns] if available_columns else pd.DataFrame(columns=expected_columns)
+            # Converter para DataFrame
+            df = pd.DataFrame(processed_data)
+            return df
         else:
             return pd.DataFrame(columns=["Codigo_Barras", "Titulo", "Autor", "Editora", "Genero", "Data_Catalogacao"])
     except Exception as e:
@@ -719,29 +756,36 @@ def check_existing_records(barcode=None, title=None):
 def save_to_csv(data, quantity=1):
     """Salva um ou mais registros de livro no banco de dados Supabase"""
     try:
-        # Prepara uma lista de dicionários para inserção
-        # O campo 'data_catalogacao' é preenchido automaticamente pelo Supabase
+        # 1. Buscar ou criar o gênero e obter seu ID
+        genero_id = get_or_create_genero(data['genre'])
+        
+        if genero_id is None:
+            st.error("Não foi possível salvar: falha ao processar o gênero.")
+            return False
+        
+        # 2. Prepara uma lista de dicionários para inserção
+        # O campo 'created_at' é preenchido automaticamente pelo Supabase
         registros_para_inserir = []
         for _ in range(quantity):
             novo_registro = {
-                'isbn13': data['barcode'],
+                'codigo_barras': data['barcode'],
                 'titulo': data['title'],
                 'autor': data['author'],
                 'editora': data['publisher'],
-                'genero': data['genre']
-                # data_catalogacao será preenchido automaticamente
+                'genero-id': genero_id
+                # created_at será preenchido automaticamente
             }
             registros_para_inserir.append(novo_registro)
 
-        # Insere a lista de registros na tabela 'Livro'
-        response = supabase.table('Livro').insert(registros_para_inserir).execute()
+        # 3. Insere a lista de registros na tabela 'livro'
+        response = supabase.table('livro').insert(registros_para_inserir).execute()
 
-        # Verificação de erro
+        # 4. Verificação de erro
         if not response.data:
             st.error("Falha ao salvar os dados no Supabase.")
             return False
         
-        # Invalida o cache após salvar
+        # 5. Invalida o cache após salvar
         load_catalog_data.clear()
         return True
 
