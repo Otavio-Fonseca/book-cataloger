@@ -18,6 +18,56 @@ import openai
 import json
 import configparser
 
+# --- CÓDIGO DE VERIFICAÇÃO DE CONEXÃO ---
+st.set_page_config(layout="wide") # Faça isso antes de qualquer outro comando st.
+st.title("Diagnóstico de Conexão com o Banco de Dados")
+
+try:
+    # Tenta inicializar a conexão usando o segredo "supabase"
+    conn = st.connection("supabase", type="sql")
+
+    st.success("✅ **SUCESSO!** A conexão com o banco de dados Supabase foi estabelecida.")
+    st.info("O segredo `connections.supabase` foi lido corretamente.")
+
+    # Teste de leitura: Tenta executar uma consulta simples.
+    # Esta consulta conta quantas linhas existem na tabela "Genero".
+    # ATENÇÃO: Use "Genero" com 'G' maiúsculo, como criamos no Supabase.
+    try:
+        df = conn.query('SELECT COUNT(*) FROM public."Genero";')
+        num_generos = df.iloc[0][0]
+        st.success(f"✅ **TESTE DE LEITURA OK!** A consulta ao banco de dados foi executada.")
+        st.write(f"Encontradas **{num_generos}** linhas na tabela 'Genero'.")
+        st.balloons()
+
+    except Exception as e:
+        st.error("❌ **ERRO NO TESTE DE LEITURA!** A conexão foi estabelecida, mas a consulta falhou.")
+        st.warning("**Possíveis causas:**")
+        st.markdown("""
+            - O nome da tabela está errado no código (deve ser `public."Genero"` com aspas e 'G' maiúsculo).
+            - A tabela 'Genero' ainda não foi criada no Supabase.
+            - Problemas de permissão no banco de dados.
+        """)
+        st.code(f"Detalhes do erro: {e}")
+
+except Exception as e:
+    st.error("❌ **FALHA NA CONEXÃO!** Não foi possível conectar ao banco de dados Supabase.")
+    st.warning("**Verifique os seguintes pontos:**")
+    st.markdown("""
+        1.  **Secrets do Streamlit:** Você adicionou o segredo no formato correto em "Settings" > "Secrets"?
+            ```toml
+            [connections.supabase]
+            url="postgresql://..."
+            ```
+        2.  **URL de Conexão:** A URL que você montou está 100% correta? Verifique cada parte: `usuário`, `senha`, `host`, `porta`. Um único caractere errado pode causar a falha.
+        3.  **Senha:** A senha na URL é exatamente a mesma que você definiu (ou resetou) no Supabase? Cuidado com caracteres especiais.
+    """)
+    st.code(f"Detalhes do erro: {e}")
+
+st.markdown("---")
+st.header("O restante da sua aplicação será carregado abaixo após o diagnóstico.")
+# --- FIM DO CÓDIGO DE VERIFICAÇÃO ---
+
+
 # Configuração da página
 st.set_page_config(
     page_title="Catalogação de Livros - Captura por Câmera",
