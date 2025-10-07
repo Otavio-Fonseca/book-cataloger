@@ -293,20 +293,25 @@ class BookSearchEngine:
             
             results = []
             sources_tried = []
+            debug_log = []  # Para debug
             
             # ESTRATÉGIA 1: Google Books Search (mais confiável para livros)
             # Nota: Já foi tentado pela IA, mas vamos tentar com query diferente
             isbn_match = ''.join(filter(str.isdigit, query))
             
             if len(isbn_match) >= 10:  # Tem ISBN na query
+                debug_log.append(f"ISBN detectado: {isbn_match}")
+                
                 # Tentar buscar por ISBN com variações
                 for isbn_variant in [isbn_match, f"ISBN {isbn_match}", f"ISBN-{isbn_match[:3]}-{isbn_match[3:]}"]:
                     try:
                         gb_url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_match}"
                         gb_response = requests.get(gb_url, timeout=8)
+                        debug_log.append(f"Google Books Search: status {gb_response.status_code}")
                         
                         if gb_response.status_code == 200:
                             gb_data = gb_response.json()
+                            debug_log.append(f"Google Books: {gb_data.get('totalItems', 0)} items")
                             
                             if gb_data.get('totalItems', 0) > 0:
                                 item = gb_data['items'][0]['volumeInfo']
@@ -323,9 +328,10 @@ class BookSearchEngine:
                                         results.append(f"Editora: {publisher}")
                                     
                                     sources_tried.append("Google Books Search ✅")
+                                    debug_log.append("Google Books: SUCESSO!")
                                     break
-                    except:
-                        pass
+                    except Exception as e:
+                        debug_log.append(f"Google Books erro: {str(e)[:50]}")
                 
                 if results:
                     return json.dumps({
@@ -333,17 +339,20 @@ class BookSearchEngine:
                         "query": query,
                         "results": results,
                         "sources": sources_tried,
+                        "debug": debug_log,
                         "recommendation": "Use search_by_title com o título encontrado"
                     }, ensure_ascii=False)
             
             # ESTRATÉGIA 2: Open Library Search (alternativa)
-            if isbn_match and len(isbn_match) >= 10:
+            if isbn_match and len(isbn_match) >= 10 and not results:
                 try:
                     ol_url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_match}&format=json&jscmd=data"
                     ol_response = requests.get(ol_url, timeout=8)
+                    debug_log.append(f"Open Library Search: status {ol_response.status_code}")
                     
                     if ol_response.status_code == 200:
                         ol_data = ol_response.json()
+                        debug_log.append(f"Open Library: {len(ol_data)} items")
                         
                         for key, book in ol_data.items():
                             title = book.get('title', '')
@@ -358,9 +367,10 @@ class BookSearchEngine:
                                     results.append(f"Editoras: {', '.join(publishers)}")
                                 
                                 sources_tried.append("Open Library Search ✅")
+                                debug_log.append("Open Library: SUCESSO!")
                                 break
-                except:
-                    pass
+                except Exception as e:
+                    debug_log.append(f"Open Library erro: {str(e)[:50]}")
                 
                 if results:
                     return json.dumps({
@@ -372,12 +382,13 @@ class BookSearchEngine:
                     }, ensure_ascii=False)
             
             # ESTRATÉGIA 3: WorldCat (biblioteca global)
-            if isbn_match and len(isbn_match) >= 10:
+            if isbn_match and len(isbn_match) >= 10 and not results:
                 try:
                     # WorldCat tem endpoint público
                     wc_url = f"https://www.worldcat.org/search?q=bn:{isbn_match}&qt=advanced&dblist=638"
                     headers = {'User-Agent': 'Mozilla/5.0'}
                     wc_response = requests.get(wc_url, headers=headers, timeout=8, allow_redirects=True)
+                    debug_log.append(f"WorldCat: status {wc_response.status_code}")
                     
                     if wc_response.status_code == 200:
                         # Extrair título da página (parsing básico)
@@ -394,8 +405,9 @@ class BookSearchEngine:
                             if len(title) > 3 and not title.lower().startswith('worldcat'):
                                 results.append(f"Possível título: {title}")
                                 sources_tried.append("WorldCat ✅")
-                except:
-                    pass
+                                debug_log.append(f"WorldCat: encontrou '{title}'")
+                except Exception as e:
+                    debug_log.append(f"WorldCat erro: {str(e)[:50]}")
             
             # ESTRATÉGIA 4: Busca via Google Custom Search (scraping inteligente)
             # Para ISBNs não encontrados, fazer busca real no Google
@@ -491,6 +503,7 @@ class BookSearchEngine:
                     "query": query,
                     "results": results,
                     "sources": sources_tried or ["Análise de padrão ISBN"],
+                    "debug": debug_log,
                     "recommendation": "Se encontrou título, use search_by_title"
                 }, ensure_ascii=False)
             
@@ -499,8 +512,9 @@ class BookSearchEngine:
                 "success": False,
                 "query": query,
                 "message": "ISBN não encontrado em múltiplas fontes de busca",
-                "sources_tried": ["Google Books", "Open Library", "WorldCat"],
-                "recommendation": "ISBN pode estar incorreto ou livro muito raro"
+                "sources_tried": ["Google Books", "Open Library", "WorldCat", "Google Scraping", "Mercado Editorial", "ISBN Brazil"],
+                "debug": debug_log,
+                "recommendation": "ISBN pode estar incorreto ou livro muito raro. Tente pesquisar manualmente no Google: 'ISBN " + isbn_match + " livro Brasil'"
             }, ensure_ascii=False)
             
         except Exception as e:
@@ -775,9 +789,11 @@ REGRAS CRÍTICAS:
 ✅ Se falhar, web_search É OBRIGATÓRIA (tem 7 estratégias!)
 ✅ Se web_search achar título, DEVE usar search_by_title depois
 ✅ Traduza gênero para PORTUGUÊS
-✅ Retorne JSON APENAS com dados REAIS das ferramentas
+✅ SEMPRE retorne JSON - MESMO se não encontrar nada!
 
-FORMATO FINAL (após coletar dados reais):
+FORMATO FINAL OBRIGATÓRIO:
+
+SE ENCONTROU DADOS (após usar ferramentas):
 {{
     "title": "título exato retornado pela ferramenta",
     "author": "autor retornado pela ferramenta",
@@ -785,6 +801,19 @@ FORMATO FINAL (após coletar dados reais):
     "genre": "gênero em português",
     "year": "ano de publicação"
 }}
+
+SE NÃO ENCONTROU (após tentar TODAS as ferramentas):
+{{
+    "title": "N/A",
+    "author": "N/A",
+    "publisher": "N/A",
+    "genre": "N/A",
+    "year": "N/A",
+    "error": "ISBN não encontrado após busca completa",
+    "suggestion": "Pesquise manualmente no Google: ISBN {isbn} livro Brasil"
+}}
+
+IMPORTANTE: NUNCA retorne texto livre. SEMPRE retorne JSON no formato acima!
 
 COMECE AGORA usando as ferramentas! ISBN brasileiro? Use brazilian_books_database PRIMEIRO!"""
             
@@ -870,7 +899,19 @@ COMECE AGORA usando as ferramentas! ISBN brasileiro? Use brazilian_books_databas
                             if function_name == 'brazilian_books_database':
                                 function_response = self._tool_brazilian_books_database(function_args.get('isbn', ''))
                             elif function_name == 'web_search':
+                                st.info("🌐 Executando web_search multi-fonte...")
                                 function_response = self._tool_web_search(function_args.get('query', ''))
+                                
+                                # Mostrar debug
+                                try:
+                                    resp_data = json.loads(function_response)
+                                    if 'debug' in resp_data:
+                                        with st.expander("🔍 Debug Web Search", expanded=False):
+                                            for log in resp_data['debug']:
+                                                st.caption(log)
+                                except:
+                                    pass
+                                    
                             elif function_name == 'search_google_books':
                                 function_response = self._tool_search_google_books(function_args.get('isbn', ''))
                             elif function_name == 'search_openlibrary':
@@ -984,20 +1025,38 @@ COMECE AGORA usando as ferramentas! ISBN brasileiro? Use brazilian_books_databas
                         st.error("❌ Formato inválido de resposta")
                         return None
                     
+                    # Verificar se IA retornou erro (não encontrou)
+                    if book_data.get('error'):
+                        st.warning(f"⚠️ IA confirmou: {book_data.get('error')}")
+                        if book_data.get('suggestion'):
+                            st.info(f"💡 Sugestão: {book_data.get('suggestion')}")
+                        # Não retornar None, continuar para fallback automático
+                        # return None  
+                        book_data = None  # Forçar fallback
+                    
                     # Mapear campos
-                    result = {
-                        'title': book_data.get('title', 'N/A'),
-                        'author': book_data.get('author', 'N/A'),
-                        'publisher': book_data.get('publisher', 'N/A'),
-                        'genre': book_data.get('genre', 'N/A'),
-                        'year': book_data.get('year', 'N/A'),
-                        'cover_url': book_data.get('cover_url'),
-                        'source': f'IA com Tools ({model_name})'
-                    }
+                    if book_data:
+                        result = {
+                            'title': book_data.get('title', 'N/A'),
+                            'author': book_data.get('author', 'N/A'),
+                            'publisher': book_data.get('publisher', 'N/A'),
+                            'genre': book_data.get('genre', 'N/A'),
+                            'year': book_data.get('year', 'N/A'),
+                            'cover_url': book_data.get('cover_url'),
+                            'source': f'IA com Tools ({model_name})'
+                        }
+                        
+                        # Se todos os campos são N/A, não encontrou nada
+                        if all(result.get(field) == 'N/A' for field in ['title', 'author', 'publisher', 'genre']):
+                            st.warning("⚠️ IA retornou JSON mas sem dados válidos")
+                            book_data = None  # Forçar fallback
+                        else:
+                            st.success(f"✅ IA pesquisou e retornou dados verificados!")
+                            return result
                     
-                    st.success(f"✅ IA pesquisou e retornou dados verificados!")
-                    
-                    return result
+                    # Se book_data é None, não retorna aqui - vai para fallback abaixo
+                    if book_data is None:
+                        st.info("🔄 Tentando fallback automático...")
                 
                 # Se chegou aqui, excedeu iterações
                 st.warning("⚠️ IA excedeu número máximo de iterações")
