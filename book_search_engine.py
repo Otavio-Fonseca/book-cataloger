@@ -590,9 +590,10 @@ FORMATO FINAL (após usar ferramentas):
                 "temperature": 0.1
             }
             
-            # Loop de chamadas (até 5 iterações para tools - web search + APIs)
-            max_iterations = 5
+            # Loop de chamadas (até 7 iterações para tools - web search + APIs + processamento)
+            max_iterations = 7
             iteration = 0
+            tool_results_collected = []  # Armazenar resultados das tools
             
             with st.spinner(f"🤖 Pesquisando com IA e ferramentas ({model_name})..."):
                 while iteration < max_iterations:
@@ -650,6 +651,18 @@ FORMATO FINAL (após usar ferramentas):
                                 )
                             else:
                                 function_response = json.dumps({"error": "Função desconhecida"})
+                            
+                            # Armazenar resultado para fallback
+                            try:
+                                result_obj = json.loads(function_response)
+                                if not result_obj.get('error'):
+                                    tool_results_collected.append({
+                                        'function': function_name,
+                                        'args': function_args,
+                                        'result': result_obj
+                                    })
+                            except:
+                                pass
                             
                             # Adicionar resultado da tool às messages
                             messages.append({
@@ -756,7 +769,7 @@ FORMATO FINAL (após usar ferramentas):
                     return result
                 
                 # Se chegou aqui, excedeu iterações
-                st.warning("⚠️ IA excedeu número máximo de iterações sem encontrar dados")
+                st.warning("⚠️ IA excedeu número máximo de iterações")
                 
                 # Debug: mostrar todas as tentativas
                 with st.expander("🔍 Debug: Histórico Completo de Tentativas", expanded=True):
@@ -765,8 +778,43 @@ FORMATO FINAL (após usar ferramentas):
                     st.markdown(f"**Modelo usado:** {model_name}")
                     st.markdown(f"**ISBN pesquisado:** {isbn}")
                 
-                # FALLBACK FINAL: Tentar web search manualmente
-                st.info("🌐 Tentando fallback manual com web search...")
+                # IMPORTANTE: Verificar se alguma tool retornou dados válidos
+                if tool_results_collected:
+                    st.info("💡 IA chamou ferramentas mas não formatou resposta. Usando melhor resultado das tools...")
+                    
+                    with st.expander("🔍 Resultados Coletados das Tools", expanded=True):
+                        for tr in tool_results_collected:
+                            st.json(tr)
+                    
+                    # Pegar o melhor resultado (priorizar search_by_title, depois google_books, depois openlibrary)
+                    best_result = None
+                    
+                    for priority_func in ['search_by_title', 'search_google_books', 'search_openlibrary']:
+                        for tool_result in tool_results_collected:
+                            if tool_result['function'] == priority_func:
+                                best_result = tool_result['result']
+                                st.success(f"✅ Usando resultado de: {priority_func}")
+                                break
+                        if best_result:
+                            break
+                    
+                    if best_result and best_result.get('title') != 'N/A':
+                        # Converter para formato esperado
+                        result = {
+                            'title': best_result.get('title', 'N/A'),
+                            'author': best_result.get('author', 'N/A'),
+                            'publisher': best_result.get('publisher', 'N/A'),
+                            'genre': best_result.get('genre', 'N/A'),
+                            'year': best_result.get('year', 'N/A'),
+                            'cover_url': best_result.get('cover_url'),
+                            'source': f"IA com Tools ({model_name}) - Auto-recuperado"
+                        }
+                        
+                        st.success("✅ Dados recuperados das ferramentas que a IA chamou!")
+                        return result
+                
+                # Se não tem resultados válidos das tools, tentar web search manual
+                st.info("🌐 Nenhum resultado válido das tools. Tentando web search manual...")
                 web_result = self._tool_web_search(f"ISBN {isbn} livro" if isbn else f"{title} {author or ''}")
                 web_data = json.loads(web_result)
                 
@@ -775,26 +823,29 @@ FORMATO FINAL (após usar ferramentas):
                 
                 if web_data.get('success') and web_data.get('results'):
                     st.success(f"✅ Informações encontradas na web!")
-                    st.markdown("**Sugestão:** Use estas informações para preencher manualmente:")
+                    st.markdown("**📋 Informações disponíveis (use para preencher manual):**")
                     for result in web_data['results']:
-                        st.write(f"- {result}")
+                        st.write(f"• {result}")
                     
                     # Tentar extrair título e buscar
                     for result_text in web_data['results']:
-                        # Tentar extrair título
-                        if any(word in result_text.lower() for word in ['título', 'title', 'livro', 'book']):
-                            # Pegar primeira parte como possível título
-                            possible_title = result_text.split(':')[1] if ':' in result_text else result_text
-                            possible_title = possible_title.split('|')[0].strip()
+                        # Tentar extrair título de várias formas
+                        if 'título' in result_text.lower() or 'title' in result_text.lower():
+                            possible_title = result_text.split(':')[-1] if ':' in result_text else result_text
+                        else:
+                            possible_title = result_text.split('|')[0] if '|' in result_text else result_text
+                        
+                        possible_title = possible_title.strip()[:100]
+                        
+                        if len(possible_title) > 5 and not possible_title.lower().startswith('resumo'):
+                            st.info(f"🔍 Tentando buscar por: '{possible_title}'")
+                            title_result = self.search_by_title_author(possible_title)
                             
-                            if len(possible_title) > 3:
-                                st.info(f"🔍 Tentando buscar por: {possible_title}")
-                                title_result = self.search_by_title_author(possible_title[:100])
-                                
-                                if title_result and title_result.get('title') != 'N/A':
-                                    st.success("✅ Dados encontrados via web search!")
-                                    return title_result
+                            if title_result and title_result.get('title') != 'N/A':
+                                st.success("✅ Dados encontrados via web search + busca por título!")
+                                return title_result
                 
+                st.warning("⚠️ Não foi possível encontrar dados mesmo com web search. Use preenchimento manual.")
                 return None
         
         except requests.exceptions.Timeout:
