@@ -472,7 +472,34 @@ class BookSearchEngine:
             supports_tools = any(x in model_name.lower() for x in ['gpt-4', 'gpt-3.5', 'claude', 'gemini'])
             
             if not supports_tools:
-                st.warning(f"⚠️ Modelo {model_name} pode não suportar tools. Recomendado: GPT-4, GPT-3.5, ou Claude-3")
+                st.warning(f"⚠️ Modelo {model_name} pode não suportar tools.")
+                st.info("💡 **Tentando fallback direto com web search...**")
+                
+                # Fallback: fazer web search manualmente
+                with st.spinner("🌐 Pesquisando na web..."):
+                    web_result = self._tool_web_search(f"ISBN {isbn}" if isbn else title)
+                    web_data = json.loads(web_result)
+                    
+                    if web_data.get('success') and web_data.get('results'):
+                        st.success(f"✅ Encontrado na web: {web_data['results'][0][:100]}...")
+                        
+                        # Tentar extrair título dos resultados
+                        for result_text in web_data['results']:
+                            if 'título' in result_text.lower() or 'title' in result_text.lower():
+                                # Extrair título aproximado
+                                import re
+                                match = re.search(r'(?:título|title):\s*(.+?)(?:\||$)', result_text, re.IGNORECASE)
+                                if match:
+                                    found_title = match.group(1).strip()
+                                    st.info(f"📚 Título encontrado: {found_title}")
+                                    
+                                    # Buscar por título
+                                    title_result = self.search_by_title_author(found_title)
+                                    if title_result:
+                                        st.success("✅ Dados completos encontrados via web search + busca por título!")
+                                        return title_result
+                
+                st.warning("⚠️ Modelo não suporta tools e fallback não encontrou dados. Use GPT-3.5 ou GPT-4.")
             
             # Preparar informações de busca
             search_parts = []
@@ -637,16 +664,52 @@ FORMATO FINAL (após usar ferramentas):
                         # Continuar loop para IA processar resultado
                         continue
                     
-                    # Se não há tool_calls, IA terminou
+                    # Se não há tool_calls, IA terminou (ou não usou tools)
                     content = message.get('content', '').strip()
                     
+                    # Verificar se IA usou alguma tool durante o processo
+                    used_tools = any('tool_calls' in msg for msg in messages if isinstance(msg, dict))
+                    
+                    if not used_tools:
+                        st.warning("⚠️ IA não usou nenhuma ferramenta de pesquisa!")
+                        st.error("🔧 A IA deveria ter usado as tools para pesquisar, mas respondeu direto.")
+                        st.info("💡 Possíveis causas:")
+                        st.markdown("""
+                        - Modelo não suporta function calling completamente
+                        - Prompt não foi interpretado corretamente
+                        - IA decidiu usar conhecimento ao invés de tools (incorreto)
+                        """)
+                        
+                        # Mostrar o que a IA retornou
+                        with st.expander("🔍 O Que a IA Retornou (SEM usar tools)", expanded=True):
+                            st.code(content)
+                        
+                        st.info("🌐 **Executando web search manualmente como fallback...**")
+                        
+                        # Fazer web search manualmente
+                        web_result = self._tool_web_search(f"ISBN {isbn} livro" if isbn else f"{title} {author or ''}")
+                        web_data = json.loads(web_result)
+                        
+                        with st.expander("🔍 Resultado da Web Search Manual", expanded=True):
+                            st.json(web_data)
+                        
+                        if web_data.get('success') and web_data.get('results'):
+                            st.markdown("**📋 Informações encontradas na web:**")
+                            for result in web_data['results']:
+                                st.write(f"• {result}")
+                        
+                        return None
+                    
                     if not content:
-                        st.warning("⚠️ IA não retornou conteúdo final")
+                        st.warning("⚠️ IA não retornou conteúdo final após usar tools")
+                        with st.expander("🔍 Debug: Histórico de Messages", expanded=True):
+                            st.json(messages)
                         return None
                     
                     # Debug: Mostrar resposta final
-                    with st.expander("🔍 Debug: Resposta Final da IA", expanded=False):
+                    with st.expander("🔍 Debug: Resposta Final da IA (Após Tools)", expanded=False):
                         st.code(content)
+                        st.markdown(f"**Tools usadas:** {iteration - 1}")
                         st.json(messages)
                     
                     # Parsear resposta final
@@ -693,7 +756,45 @@ FORMATO FINAL (após usar ferramentas):
                     return result
                 
                 # Se chegou aqui, excedeu iterações
-                st.warning("⚠️ IA excedeu número máximo de iterações")
+                st.warning("⚠️ IA excedeu número máximo de iterações sem encontrar dados")
+                
+                # Debug: mostrar todas as tentativas
+                with st.expander("🔍 Debug: Histórico Completo de Tentativas", expanded=True):
+                    st.json(messages)
+                    st.markdown(f"**Total de iterações:** {iteration}")
+                    st.markdown(f"**Modelo usado:** {model_name}")
+                    st.markdown(f"**ISBN pesquisado:** {isbn}")
+                
+                # FALLBACK FINAL: Tentar web search manualmente
+                st.info("🌐 Tentando fallback manual com web search...")
+                web_result = self._tool_web_search(f"ISBN {isbn} livro" if isbn else f"{title} {author or ''}")
+                web_data = json.loads(web_result)
+                
+                with st.expander("🔍 Resultado da Web Search Manual", expanded=True):
+                    st.json(web_data)
+                
+                if web_data.get('success') and web_data.get('results'):
+                    st.success(f"✅ Informações encontradas na web!")
+                    st.markdown("**Sugestão:** Use estas informações para preencher manualmente:")
+                    for result in web_data['results']:
+                        st.write(f"- {result}")
+                    
+                    # Tentar extrair título e buscar
+                    for result_text in web_data['results']:
+                        # Tentar extrair título
+                        if any(word in result_text.lower() for word in ['título', 'title', 'livro', 'book']):
+                            # Pegar primeira parte como possível título
+                            possible_title = result_text.split(':')[1] if ':' in result_text else result_text
+                            possible_title = possible_title.split('|')[0].strip()
+                            
+                            if len(possible_title) > 3:
+                                st.info(f"🔍 Tentando buscar por: {possible_title}")
+                                title_result = self.search_by_title_author(possible_title[:100])
+                                
+                                if title_result and title_result.get('title') != 'N/A':
+                                    st.success("✅ Dados encontrados via web search!")
+                                    return title_result
+                
                 return None
         
         except requests.exceptions.Timeout:

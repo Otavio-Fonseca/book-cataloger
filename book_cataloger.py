@@ -1296,12 +1296,18 @@ def main():
                 ai_disponivel = config.get('enabled', False) and config.get('api_key', '')
                 
                 if ai_disponivel:
-                    buscar_ia_button = st.form_submit_button("🤖 Buscar com IA", help="Busca avançada usando Inteligência Artificial")
+                    buscar_ia_button = st.form_submit_button("🤖 Buscar com IA", help="Busca avançada com ferramentas de pesquisa na web")
                 else:
                     st.form_submit_button("🤖 IA (Desativada)", disabled=True, help="Configure a API do OpenRouter em Configurações")
                     buscar_ia_button = False
             with col3:
                 limpar_button = st.form_submit_button("🗑️ Limpar", help="Limpar o campo de código de barras")
+            
+            # Mostrar dica sobre modelos se IA estiver ativa
+            if ai_disponivel:
+                model_atual = config.get('model', '').lower()
+                if not any(x in model_atual for x in ['gpt-4', 'gpt-3.5', 'claude']):
+                    st.caption("⚠️ Para busca com IA funcionar melhor, use GPT-3.5, GPT-4 ou Claude-3 (Configure em 'Configurações')")
             
             # Processar ações do formulário
             if buscar_button:
@@ -1595,6 +1601,12 @@ def main():
                         st.rerun()
             else:
                 st.warning("⚠️ Não foi possível encontrar dados para este código de barras nas fontes online.")
+                
+                # Sugestão de usar IA se disponível
+                config = get_openrouter_config()
+                if config.get('enabled', False) and config.get('api_key', ''):
+                    st.info("💡 **Dica:** Tente usar o botão **🤖 Buscar com IA** para ISBNs raros ou regionais.")
+                    st.markdown("A IA pode pesquisar na internet e encontrar informações que as APIs não têm.")
                 
                 # Opção 1: Busca por título
                 st.markdown("### 🔍 Opção 1: Buscar por Título")
