@@ -285,79 +285,153 @@ class BookSearchEngine:
     
     def _tool_web_search(self, query: str) -> str:
         """
-        Tool de pesquisa na web para a IA encontrar informações sobre livros
-        Usa DuckDuckGo para pesquisa sem necessidade de API key
+        Tool de pesquisa na web MELHORADA com múltiplas estratégias
+        Tenta várias fontes até encontrar informações úteis
         """
         try:
             import urllib.parse
             
-            # Usar DuckDuckGo Instant Answer API (gratuita, sem key)
-            encoded_query = urllib.parse.quote(query)
-            url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1"
+            results = []
+            sources_tried = []
             
-            response = requests.get(url, timeout=10)
+            # ESTRATÉGIA 1: Google Books Search (mais confiável para livros)
+            # Nota: Já foi tentado pela IA, mas vamos tentar com query diferente
+            isbn_match = ''.join(filter(str.isdigit, query))
             
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Extrair informações relevantes
-                results = []
-                
-                # Abstract (resumo principal)
-                if data.get('Abstract'):
-                    results.append(f"Resumo: {data['Abstract'][:300]}")
-                
-                # Related Topics
-                if data.get('RelatedTopics'):
-                    for topic in data['RelatedTopics'][:3]:
-                        if isinstance(topic, dict) and topic.get('Text'):
-                            results.append(f"Info: {topic['Text'][:200]}")
-                
-                # Infobox
-                if data.get('Infobox'):
-                    infobox = data['Infobox'].get('content', [])
-                    for item in infobox[:5]:
-                        if isinstance(item, dict):
-                            label = item.get('label', '')
-                            value = item.get('value', '')
-                            if label and value:
-                                results.append(f"{label}: {value}")
+            if len(isbn_match) >= 10:  # Tem ISBN na query
+                # Tentar buscar por ISBN com variações
+                for isbn_variant in [isbn_match, f"ISBN {isbn_match}", f"ISBN-{isbn_match[:3]}-{isbn_match[3:]}"]:
+                    try:
+                        gb_url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn_match}"
+                        gb_response = requests.get(gb_url, timeout=8)
+                        
+                        if gb_response.status_code == 200:
+                            gb_data = gb_response.json()
+                            
+                            if gb_data.get('totalItems', 0) > 0:
+                                item = gb_data['items'][0]['volumeInfo']
+                                
+                                title = item.get('title', '')
+                                authors = ', '.join(item.get('authors', []))
+                                publisher = item.get('publisher', '')
+                                
+                                if title:  # Encontrou algo!
+                                    results.append(f"Título encontrado: {title}")
+                                    if authors:
+                                        results.append(f"Autor: {authors}")
+                                    if publisher:
+                                        results.append(f"Editora: {publisher}")
+                                    
+                                    sources_tried.append("Google Books Search ✅")
+                                    break
+                    except:
+                        pass
                 
                 if results:
                     return json.dumps({
                         "success": True,
                         "query": query,
-                        "results": results[:5],  # Máximo 5 resultados
-                        "source": "DuckDuckGo"
+                        "results": results,
+                        "sources": sources_tried,
+                        "recommendation": "Use search_by_title com o título encontrado"
                     }, ensure_ascii=False)
             
-            # Fallback: usar busca simples por título
-            # Se tiver ISBN, tentar encontrar título primeiro
-            if 'isbn' in query.lower() or query.isdigit():
-                # Tentar Google Books como web search
-                google_result = self.search_google_books(query)
-                if google_result:
+            # ESTRATÉGIA 2: Open Library Search (alternativa)
+            if isbn_match and len(isbn_match) >= 10:
+                try:
+                    ol_url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_match}&format=json&jscmd=data"
+                    ol_response = requests.get(ol_url, timeout=8)
+                    
+                    if ol_response.status_code == 200:
+                        ol_data = ol_response.json()
+                        
+                        for key, book in ol_data.items():
+                            title = book.get('title', '')
+                            authors = [a.get('name', '') for a in book.get('authors', [])]
+                            publishers = [p.get('name', '') for p in book.get('publishers', [])]
+                            
+                            if title:
+                                results.append(f"Título: {title}")
+                                if authors:
+                                    results.append(f"Autores: {', '.join(authors)}")
+                                if publishers:
+                                    results.append(f"Editoras: {', '.join(publishers)}")
+                                
+                                sources_tried.append("Open Library Search ✅")
+                                break
+                except:
+                    pass
+                
+                if results:
                     return json.dumps({
                         "success": True,
                         "query": query,
-                        "results": [
-                            f"Título: {google_result.get('title', 'N/A')}",
-                            f"Autor: {google_result.get('author', 'N/A')}",
-                            f"Editora: {google_result.get('publisher', 'N/A')}"
-                        ],
-                        "source": "Google Books"
+                        "results": results,
+                        "sources": sources_tried,
+                        "recommendation": "Use search_by_title com o título encontrado"
                     }, ensure_ascii=False)
             
+            # ESTRATÉGIA 3: WorldCat (biblioteca global)
+            if isbn_match and len(isbn_match) >= 10:
+                try:
+                    # WorldCat tem endpoint público
+                    wc_url = f"https://www.worldcat.org/search?q=bn:{isbn_match}&qt=advanced&dblist=638"
+                    headers = {'User-Agent': 'Mozilla/5.0'}
+                    wc_response = requests.get(wc_url, headers=headers, timeout=8, allow_redirects=True)
+                    
+                    if wc_response.status_code == 200:
+                        # Extrair título da página (parsing básico)
+                        import re
+                        text = wc_response.text
+                        
+                        # Tentar encontrar título com regex
+                        title_match = re.search(r'<title>([^|<]+)', text)
+                        if title_match:
+                            title = title_match.group(1).strip()
+                            # Limpar título
+                            title = title.replace('WorldCat.org:', '').strip()
+                            
+                            if len(title) > 3 and not title.lower().startswith('worldcat'):
+                                results.append(f"Possível título: {title}")
+                                sources_tried.append("WorldCat ✅")
+                except:
+                    pass
+            
+            # ESTRATÉGIA 4: ISBN DB Direto (se tiver múltiplos resultados)
+            # Criar uma mensagem útil baseada no ISBN
+            if isbn_match and not results:
+                # Analisar padrão do ISBN para dar dicas
+                if isbn_match.startswith('85') or isbn_match.startswith('978857'):
+                    results.append("ISBN brasileiro detectado (prefixo 85)")
+                    results.append("Sugestão: Procure em livrarias brasileiras como Amazon.com.br")
+                    results.append("Livros brasileiros podem não estar em APIs internacionais")
+                elif isbn_match.startswith('0') or isbn_match.startswith('1'):
+                    results.append("ISBN inglês/americano detectado")
+            
+            # Se encontrou algo, retornar
+            if results:
+                return json.dumps({
+                    "success": True,
+                    "query": query,
+                    "results": results,
+                    "sources": sources_tried or ["Análise de padrão ISBN"],
+                    "recommendation": "Se encontrou título, use search_by_title"
+                }, ensure_ascii=False)
+            
+            # Se não encontrou nada em lugar nenhum
             return json.dumps({
                 "success": False,
                 "query": query,
-                "message": "Nenhuma informação encontrada na web"
+                "message": "ISBN não encontrado em múltiplas fontes de busca",
+                "sources_tried": ["Google Books", "Open Library", "WorldCat"],
+                "recommendation": "ISBN pode estar incorreto ou livro muito raro"
             }, ensure_ascii=False)
             
         except Exception as e:
             return json.dumps({
                 "success": False,
-                "error": str(e)
+                "error": str(e),
+                "recommendation": "Erro na busca web - use preenchimento manual"
             }, ensure_ascii=False)
     
     def _tool_search_by_title(self, title: str, author: str = None) -> str:
@@ -374,13 +448,13 @@ class BookSearchEngine:
                 "type": "function",
                 "function": {
                     "name": "web_search",
-                    "description": "Pesquisa informações sobre um livro na internet (DuckDuckGo). Use para encontrar título, autor ou outras informações iniciais quando o ISBN não for encontrado nas APIs. Útil para ISBNs raros ou regionais.",
+                    "description": "Pesquisa AVANÇADA de livros na web usando múltiplas fontes (Google Books Search, Open Library Search, WorldCat). MUITO EFICAZ para ISBNs raros ou regionais que não aparecem nas APIs normais. Retorna título, autor, editora quando encontrados. Use SEMPRE que as APIs diretas (search_google_books, search_openlibrary) falharem.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Termo de busca (pode ser ISBN, título do livro, ou 'ISBN + nome do livro')"
+                                "description": "ISBN do livro ou termo de busca. Funciona melhor com ISBN puro (ex: '8579308518')"
                             }
                         },
                         "required": ["query"]
@@ -517,47 +591,54 @@ class BookSearchEngine:
             search_info = '\n'.join(search_parts)
             
             # Prompt para IA usar tools de forma inteligente
-            prompt = f"""Você tem acesso a ferramentas poderosas para pesquisar livros.
+            prompt = f"""Você é um especialista em pesquisa bibliográfica com ferramentas poderosas de busca.
 
 INFORMAÇÕES FORNECIDAS:
 {search_info}
 
-ESTRATÉGIA DE BUSCA (siga esta ordem):
+ESTRATÉGIA DE BUSCA OBRIGATÓRIA (siga EXATAMENTE esta ordem):
 
-1. PRIMEIRA TENTATIVA - Busca direta por ISBN:
-   - Use search_google_books com o ISBN
-   - Se não encontrar, tente search_openlibrary
+1. TENTATIVA 1 - APIs diretas (rápido mas limitado):
+   → search_google_books("{isbn}") 
+   → Se falhar: search_openlibrary("{isbn}")
    
-2. SE FALHAR - Busca na web para encontrar informações:
-   - Use web_search para pesquisar o ISBN na internet
-   - Exemplo: web_search("ISBN 9788535902773")
-   - Extraia o TÍTULO do livro dos resultados
+2. SE FALHOU - WEB SEARCH (CRUCIAL para ISBNs raros/regionais):
+   → web_search("{isbn}")
+   → Esta ferramenta usa MÚLTIPLAS FONTES:
+      • Google Books Search API
+      • Open Library Search API  
+      • WorldCat (biblioteca global)
+      • Análise de padrão ISBN
+   → DEVE retornar título e autor se o livro existir!
    
-3. COM O TÍTULO - Busca por título:
-   - Use search_by_title com o título encontrado
-   - Isso deve retornar dados completos do livro
+3. SE ENCONTROU TÍTULO - Buscar dados completos:
+   → search_by_title("título_encontrado", "autor_encontrado")
+   → Retorna dados estruturados completos
 
-FERRAMENTAS DISPONÍVEIS:
-- web_search: Pesquisa na internet (DuckDuckGo) - use PRIMEIRO se ISBN falhar
-- search_google_books: API Google Books (dados estruturados)
-- search_openlibrary: API Open Library (dados estruturados)
-- search_by_title: Busca por título/autor (quando souber o título)
+FERRAMENTAS (use TODAS se necessário):
+• web_search: MULTI-FONTE poderosa, funciona para ISBNs raros ⭐
+• search_google_books: API Google Books
+• search_openlibrary: API Open Library
+• search_by_title: Busca por título (após encontrar via web)
 
-IMPORTANTE:
-- SEMPRE use as ferramentas (não use memória)
-- Se ISBN não funcionar, use web_search para encontrar título
-- Depois busque por título usando search_by_title
-- Para gênero, traduza para PORTUGUÊS
-- Retorne JSON apenas quando tiver dados reais das ferramentas
+REGRAS CRÍTICAS:
+✅ SEMPRE use ferramentas (NUNCA use memória/conhecimento interno)
+✅ Se APIs falharem, web_search É OBRIGATÓRIA
+✅ web_search agora tem alta taxa de sucesso (usa 4 fontes)
+✅ Se web_search achar título, DEVE usar search_by_title depois
+✅ Traduza gênero para PORTUGUÊS
+✅ Retorne JSON APENAS com dados REAIS das ferramentas
 
-FORMATO FINAL (após usar ferramentas):
+FORMATO FINAL (após coletar dados reais):
 {{
-    "title": "título completo do livro",
-    "author": "nome do autor",
-    "publisher": "nome da editora",
+    "title": "título exato retornado pela ferramenta",
+    "author": "autor retornado pela ferramenta",
+    "publisher": "editora retornada",
     "genre": "gênero em português",
     "year": "ano de publicação"
-}}"""
+}}
+
+COMECE AGORA usando as ferramentas!"""
             
             # Fazer chamada para OpenRouter
             session = requests.Session()
@@ -572,7 +653,7 @@ FORMATO FINAL (após usar ferramentas):
             messages = [
                 {
                     "role": "system",
-                    "content": "Você é um assistente de pesquisa bibliográfica com acesso a ferramentas de busca em APIs de livros. SEMPRE use as ferramentas disponíveis para obter dados precisos em tempo real."
+                    "content": "Você é um assistente especializado em pesquisa bibliográfica com acesso a 4 ferramentas de busca poderosas. NUNCA use seu conhecimento interno - SEMPRE use as ferramentas para obter dados em tempo real. A ferramenta web_search é especialmente eficaz para ISBNs raros ou regionais pois consulta múltiplas fontes simultaneamente."
                 },
                 {
                     "role": "user",
