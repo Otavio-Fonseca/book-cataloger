@@ -267,14 +267,193 @@ class BookSearchEngine:
         
         return None
     
-    # ==================== BUSCA COM IA ====================
+    # ==================== TOOLS/FUNCTION CALLING ====================
+    
+    def _tool_search_google_books(self, isbn: str) -> str:
+        """Tool que a IA pode chamar para pesquisar no Google Books"""
+        result = self.search_google_books(isbn)
+        if result:
+            return json.dumps(result, ensure_ascii=False)
+        return json.dumps({"error": "Livro não encontrado no Google Books"})
+    
+    def _tool_search_openlibrary(self, isbn: str) -> str:
+        """Tool que a IA pode chamar para pesquisar na Open Library"""
+        result = self.search_openlibrary(isbn)
+        if result:
+            return json.dumps(result, ensure_ascii=False)
+        return json.dumps({"error": "Livro não encontrado na Open Library"})
+    
+    def _tool_web_search(self, query: str) -> str:
+        """
+        Tool de pesquisa na web para a IA encontrar informações sobre livros
+        Usa DuckDuckGo para pesquisa sem necessidade de API key
+        """
+        try:
+            import urllib.parse
+            
+            # Usar DuckDuckGo Instant Answer API (gratuita, sem key)
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1"
+            
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Extrair informações relevantes
+                results = []
+                
+                # Abstract (resumo principal)
+                if data.get('Abstract'):
+                    results.append(f"Resumo: {data['Abstract'][:300]}")
+                
+                # Related Topics
+                if data.get('RelatedTopics'):
+                    for topic in data['RelatedTopics'][:3]:
+                        if isinstance(topic, dict) and topic.get('Text'):
+                            results.append(f"Info: {topic['Text'][:200]}")
+                
+                # Infobox
+                if data.get('Infobox'):
+                    infobox = data['Infobox'].get('content', [])
+                    for item in infobox[:5]:
+                        if isinstance(item, dict):
+                            label = item.get('label', '')
+                            value = item.get('value', '')
+                            if label and value:
+                                results.append(f"{label}: {value}")
+                
+                if results:
+                    return json.dumps({
+                        "success": True,
+                        "query": query,
+                        "results": results[:5],  # Máximo 5 resultados
+                        "source": "DuckDuckGo"
+                    }, ensure_ascii=False)
+            
+            # Fallback: usar busca simples por título
+            # Se tiver ISBN, tentar encontrar título primeiro
+            if 'isbn' in query.lower() or query.isdigit():
+                # Tentar Google Books como web search
+                google_result = self.search_google_books(query)
+                if google_result:
+                    return json.dumps({
+                        "success": True,
+                        "query": query,
+                        "results": [
+                            f"Título: {google_result.get('title', 'N/A')}",
+                            f"Autor: {google_result.get('author', 'N/A')}",
+                            f"Editora: {google_result.get('publisher', 'N/A')}"
+                        ],
+                        "source": "Google Books"
+                    }, ensure_ascii=False)
+            
+            return json.dumps({
+                "success": False,
+                "query": query,
+                "message": "Nenhuma informação encontrada na web"
+            }, ensure_ascii=False)
+            
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "error": str(e)
+            }, ensure_ascii=False)
+    
+    def _tool_search_by_title(self, title: str, author: str = None) -> str:
+        """Tool que a IA pode chamar para pesquisar por título e autor"""
+        result = self.search_by_title_author(title, author)
+        if result:
+            return json.dumps(result, ensure_ascii=False)
+        return json.dumps({"error": "Livro não encontrado por título/autor"})
+    
+    def get_available_tools(self):
+        """Define as ferramentas disponíveis para a IA"""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Pesquisa informações sobre um livro na internet (DuckDuckGo). Use para encontrar título, autor ou outras informações iniciais quando o ISBN não for encontrado nas APIs. Útil para ISBNs raros ou regionais.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Termo de busca (pode ser ISBN, título do livro, ou 'ISBN + nome do livro')"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_google_books",
+                    "description": "Pesquisa informações detalhadas de um livro na API do Google Books usando ISBN. Retorna título, autor, editora, gênero, ano e capa.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "isbn": {
+                                "type": "string",
+                                "description": "O código ISBN do livro (10 ou 13 dígitos)"
+                            }
+                        },
+                        "required": ["isbn"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_openlibrary",
+                    "description": "Pesquisa informações detalhadas de um livro na API da Open Library usando ISBN. Retorna título, autor, editora, gênero e ano.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "isbn": {
+                                "type": "string",
+                                "description": "O código ISBN do livro (10 ou 13 dígitos)"
+                            }
+                        },
+                        "required": ["isbn"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_by_title",
+                    "description": "Pesquisa livro usando título e opcionalmente autor. Use quando encontrar o título via web search mas não tiver ISBN, ou quando ISBN não funcionar nas outras APIs.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Título do livro"
+                            },
+                            "author": {
+                                "type": "string",
+                                "description": "Nome do autor (opcional)"
+                            }
+                        },
+                        "required": ["title"]
+                    }
+                }
+            }
+        ]
+    
+    # ==================== BUSCA COM IA (COM TOOLS) ====================
+    
+    # ==================== BUSCA COM IA (COM TOOLS/FUNCTION CALLING) ====================
     
     def search_with_ai(self, title: str, author: str = None, isbn: str = None) -> Optional[Dict]:
         """
-        Usa IA para encontrar dados do livro através de conhecimento do modelo
+        Usa IA com ferramentas de pesquisa para encontrar dados REAIS do livro.
         
-        A IA usa seu conhecimento treinado para fornecer informações sobre livros.
-        Funciona melhor para livros conhecidos e populares.
+        A IA pode chamar APIs do Google Books e Open Library em tempo real
+        para garantir dados precisos e verificáveis.
         """
         try:
             # Verificar se OpenRouter está configurado
@@ -286,6 +465,14 @@ class BookSearchEngine:
             if not config.get('enabled') or not config.get('api_key'):
                 st.warning("⚠️ API do OpenRouter não está ativa. Ative em 'Configurações'.")
                 return None
+            
+            model_name = config["model"].replace(" 🔍", "").strip()
+            
+            # Verificar se o modelo suporta function calling
+            supports_tools = any(x in model_name.lower() for x in ['gpt-4', 'gpt-3.5', 'claude', 'gemini'])
+            
+            if not supports_tools:
+                st.warning(f"⚠️ Modelo {model_name} pode não suportar tools. Recomendado: GPT-4, GPT-3.5, ou Claude-3")
             
             # Preparar informações de busca
             search_parts = []
@@ -302,33 +489,48 @@ class BookSearchEngine:
             
             search_info = '\n'.join(search_parts)
             
-            # Prompt melhorado e mais específico
-            prompt = f"""Você é um bibliotecário especialista com acesso a informações sobre livros publicados.
+            # Prompt para IA usar tools de forma inteligente
+            prompt = f"""Você tem acesso a ferramentas poderosas para pesquisar livros.
 
-TAREFA: Forneça informações PRECISAS sobre o seguinte livro:
-
+INFORMAÇÕES FORNECIDAS:
 {search_info}
 
-INSTRUÇÕES IMPORTANTES:
-1. Use seu conhecimento sobre livros para preencher os dados
-2. Se o livro for conhecido, forneça informações precisas
-3. Se NÃO conhecer o livro, retorne "N/A" nos campos desconhecidos
-4. NÃO invente dados - apenas forneça o que você SABE
-5. Para gênero, use termos em PORTUGUÊS (ex: Ficção, Romance, História, etc.)
+ESTRATÉGIA DE BUSCA (siga esta ordem):
 
-FORMATO DE RESPOSTA (apenas JSON, sem texto adicional):
-```json
+1. PRIMEIRA TENTATIVA - Busca direta por ISBN:
+   - Use search_google_books com o ISBN
+   - Se não encontrar, tente search_openlibrary
+   
+2. SE FALHAR - Busca na web para encontrar informações:
+   - Use web_search para pesquisar o ISBN na internet
+   - Exemplo: web_search("ISBN 9788535902773")
+   - Extraia o TÍTULO do livro dos resultados
+   
+3. COM O TÍTULO - Busca por título:
+   - Use search_by_title com o título encontrado
+   - Isso deve retornar dados completos do livro
+
+FERRAMENTAS DISPONÍVEIS:
+- web_search: Pesquisa na internet (DuckDuckGo) - use PRIMEIRO se ISBN falhar
+- search_google_books: API Google Books (dados estruturados)
+- search_openlibrary: API Open Library (dados estruturados)
+- search_by_title: Busca por título/autor (quando souber o título)
+
+IMPORTANTE:
+- SEMPRE use as ferramentas (não use memória)
+- Se ISBN não funcionar, use web_search para encontrar título
+- Depois busque por título usando search_by_title
+- Para gênero, traduza para PORTUGUÊS
+- Retorne JSON apenas quando tiver dados reais das ferramentas
+
+FORMATO FINAL (após usar ferramentas):
 {{
-    "title": "título completo oficial do livro em português",
-    "author": "nome completo do autor principal",
-    "publisher": "nome da editora brasileira (se souber)",
-    "genre": "gênero literário em português",
-    "year": "ano de publicação",
-    "isbn13": "ISBN-13 completo (13 dígitos)"
-}}
-```
-
-IMPORTANTE: Retorne APENAS o JSON, sem explicações antes ou depois."""
+    "title": "título completo do livro",
+    "author": "nome do autor",
+    "publisher": "nome da editora",
+    "genre": "gênero em português",
+    "year": "ano de publicação"
+}}"""
             
             # Fazer chamada para OpenRouter
             session = requests.Session()
@@ -339,98 +541,160 @@ IMPORTANTE: Retorne APENAS o JSON, sem explicações antes ou depois."""
                 'X-Title': 'Book Cataloger'
             })
             
-            model_name = config["model"].replace(" 🔍", "").strip()
+            # Messages iniciais
+            messages = [
+                {
+                    "role": "system",
+                    "content": "Você é um assistente de pesquisa bibliográfica com acesso a ferramentas de busca em APIs de livros. SEMPRE use as ferramentas disponíveis para obter dados precisos em tempo real."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
             
-            # Payload otimizado
+            # Payload com tools
             payload = {
                 "model": model_name,
-                "messages": [
-                    {
-                        "role": "system", 
-                        "content": "Você é um bibliotecário especialista. Forneça informações precisas sobre livros quando souber, ou 'N/A' quando não souber. Retorne sempre JSON válido sem markdown."
-                    },
-                    {
-                        "role": "user", 
-                        "content": prompt
+                "messages": messages,
+                "tools": self.get_available_tools(),
+                "tool_choice": "auto",
+                "max_tokens": 1500,  # Aumentado para suportar múltiplas tool calls
+                "temperature": 0.1
+            }
+            
+            # Loop de chamadas (até 5 iterações para tools - web search + APIs)
+            max_iterations = 5
+            iteration = 0
+            
+            with st.spinner(f"🤖 Pesquisando com IA e ferramentas ({model_name})..."):
+                while iteration < max_iterations:
+                    iteration += 1
+                    
+                    # Fazer chamada
+                    response = session.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        json=payload,
+                        timeout=(10, 60)
+                    )
+                    
+                    if response.status_code != 200:
+                        st.error(f"❌ Erro na API: {response.status_code}")
+                        st.error(f"Resposta: {response.text[:300]}")
+                        return None
+                    
+                    result_data = response.json()
+                    
+                    if 'error' in result_data:
+                        st.error(f"❌ Erro do OpenRouter: {result_data['error']}")
+                        return None
+                    
+                    if 'choices' not in result_data or not result_data['choices']:
+                        st.error("❌ Resposta vazia da IA")
+                        return None
+                    
+                    message = result_data['choices'][0]['message']
+                    
+                    # Adicionar resposta às messages
+                    messages.append(message)
+                    
+                    # Verificar se IA quer chamar uma tool
+                    if message.get('tool_calls'):
+                        st.info(f"🔧 IA está usando ferramentas de pesquisa... (iteração {iteration})")
+                        
+                        # Processar cada tool call
+                        for tool_call in message['tool_calls']:
+                            function_name = tool_call['function']['name']
+                            function_args = json.loads(tool_call['function']['arguments'])
+                            
+                            st.caption(f"📡 Chamando: {function_name}({function_args})")
+                            
+                            # Executar a função correspondente
+                            if function_name == 'web_search':
+                                function_response = self._tool_web_search(function_args.get('query', ''))
+                            elif function_name == 'search_google_books':
+                                function_response = self._tool_search_google_books(function_args.get('isbn', ''))
+                            elif function_name == 'search_openlibrary':
+                                function_response = self._tool_search_openlibrary(function_args.get('isbn', ''))
+                            elif function_name == 'search_by_title':
+                                function_response = self._tool_search_by_title(
+                                    function_args.get('title', ''),
+                                    function_args.get('author')
+                                )
+                            else:
+                                function_response = json.dumps({"error": "Função desconhecida"})
+                            
+                            # Adicionar resultado da tool às messages
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call['id'],
+                                "content": function_response
+                            })
+                        
+                        # Atualizar payload para próxima iteração
+                        payload['messages'] = messages
+                        
+                        # Continuar loop para IA processar resultado
+                        continue
+                    
+                    # Se não há tool_calls, IA terminou
+                    content = message.get('content', '').strip()
+                    
+                    if not content:
+                        st.warning("⚠️ IA não retornou conteúdo final")
+                        return None
+                    
+                    # Debug: Mostrar resposta final
+                    with st.expander("🔍 Debug: Resposta Final da IA", expanded=False):
+                        st.code(content)
+                        st.json(messages)
+                    
+                    # Parsear resposta final
+                    if '```json' in content:
+                        content = content.split('```json')[1].split('```')[0].strip()
+                    elif '```' in content:
+                        content = content.split('```')[1].split('```')[0].strip()
+                    
+                    try:
+                        book_data = json.loads(content)
+                    except json.JSONDecodeError:
+                        # Se não conseguir parsear, tentar extrair JSON
+                        import re
+                        json_match = re.search(r'\{[^}]+\}', content, re.DOTALL)
+                        if json_match:
+                            try:
+                                book_data = json.loads(json_match.group())
+                            except:
+                                st.error(f"❌ Não foi possível extrair JSON válido")
+                                st.code(content)
+                                return None
+                        else:
+                            st.error(f"❌ Resposta não contém JSON válido")
+                            st.code(content)
+                            return None
+                    
+                    if not isinstance(book_data, dict):
+                        st.error("❌ Formato inválido de resposta")
+                        return None
+                    
+                    # Mapear campos
+                    result = {
+                        'title': book_data.get('title', 'N/A'),
+                        'author': book_data.get('author', 'N/A'),
+                        'publisher': book_data.get('publisher', 'N/A'),
+                        'genre': book_data.get('genre', 'N/A'),
+                        'year': book_data.get('year', 'N/A'),
+                        'cover_url': book_data.get('cover_url'),
+                        'source': f'IA com Tools ({model_name})'
                     }
-                ],
-                "max_tokens": 600,
-                "temperature": 0.1,
-                "top_p": 1,
-                "frequency_penalty": 0,
-                "presence_penalty": 0
-            }
-            
-            # Adicionar response_format para modelos que suportam
-            if 'gpt-4' in model_name or 'gpt-3.5' in model_name:
-                payload["response_format"] = {"type": "json_object"}
-            
-            # Debug: Mostrar que está buscando
-            with st.spinner(f"🤖 Consultando IA ({model_name})..."):
-                response = session.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    json=payload,
-                    timeout=(10, 45)
-                )
-            
-            # Debug: Mostrar status
-            if response.status_code != 200:
-                st.error(f"❌ Erro na API: {response.status_code}")
-                st.error(f"Resposta: {response.text[:200]}")
+                    
+                    st.success(f"✅ IA pesquisou e retornou dados verificados!")
+                    
+                    return result
+                
+                # Se chegou aqui, excedeu iterações
+                st.warning("⚠️ IA excedeu número máximo de iterações")
                 return None
-            
-            result_data = response.json()
-            
-            # Verificar se há erro na resposta
-            if 'error' in result_data:
-                st.error(f"❌ Erro do OpenRouter: {result_data['error']}")
-                return None
-            
-            # Extrair conteúdo
-            if 'choices' not in result_data or not result_data['choices']:
-                st.error("❌ Resposta vazia da IA")
-                return None
-            
-            content = result_data['choices'][0]['message']['content'].strip()
-            
-            # Debug: Mostrar resposta bruta (opcional)
-            with st.expander("🔍 Debug: Resposta da IA", expanded=False):
-                st.code(content)
-            
-            # Limpar markdown se presente
-            if '```json' in content:
-                content = content.split('```json')[1].split('```')[0].strip()
-            elif '```' in content:
-                content = content.split('```')[1].split('```')[0].strip()
-            
-            # Tentar parsear JSON
-            try:
-                book_data = json.loads(content)
-            except json.JSONDecodeError as je:
-                st.error(f"❌ Erro ao parsear JSON da IA: {je}")
-                st.code(content)
-                return None
-            
-            # Validar campos obrigatórios
-            if not isinstance(book_data, dict):
-                st.error("❌ IA não retornou um objeto JSON válido")
-                return None
-            
-            # Mapear campos e adicionar fonte
-            result = {
-                'title': book_data.get('title', 'N/A'),
-                'author': book_data.get('author', 'N/A'),
-                'publisher': book_data.get('publisher', 'N/A'),
-                'genre': book_data.get('genre', 'N/A'),
-                'year': book_data.get('year', 'N/A'),
-                'cover_url': None,  # IA não fornece URL
-                'source': f'IA ({model_name})'
-            }
-            
-            # Mostrar resultado
-            st.success(f"✅ IA retornou dados! Modelo: {model_name}")
-            
-            return result
         
         except requests.exceptions.Timeout:
             st.error("❌ Timeout na chamada da IA. Tente novamente.")
