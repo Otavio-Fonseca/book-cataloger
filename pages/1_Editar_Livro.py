@@ -1,6 +1,12 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
+import sys
+import os
+
+# Adicionar o diretório pai ao path para importar utils_auth
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils_auth import check_login, get_operador_nome, show_user_info
 
 # Configuração da página
 st.set_page_config(
@@ -8,6 +14,13 @@ st.set_page_config(
     page_icon="✍️",
     layout="wide"
 )
+
+# Verificar login
+if not check_login():
+    st.stop()
+
+# Mostrar info do usuário
+show_user_info()
 
 # Inicializar cliente Supabase
 @st.cache_resource
@@ -25,34 +38,33 @@ def init_supabase():
 supabase = init_supabase()
 
 # Funções auxiliares
-def buscar_livros(termo_busca, tipo_busca="titulo"):
+def buscar_livros(termo_busca, tipo_busca="titulo", filtrar_por_operador=True):
     """Busca livros por título ou código de barras com JOIN na tabela genero"""
     try:
-        if tipo_busca == "titulo":
-            # Busca por título (case insensitive)
-            response = supabase.table('livro').select("""
-                id,
-                codigo_barras,
-                titulo,
-                autor,
-                editora,
-                created_at,
-                operador_nome,
-                genero:genero-id(id, nome)
-            """).ilike('titulo', f'%{termo_busca}%').execute()
-        else:
-            # Busca exata por código de barras
-            response = supabase.table('livro').select("""
-                id,
-                codigo_barras,
-                titulo,
-                autor,
-                editora,
-                created_at,
-                operador_nome,
-                genero:genero-id(id, nome)
-            """).eq('codigo_barras', termo_busca).execute()
+        # Iniciar query
+        query = supabase.table('livro').select("""
+            id,
+            codigo_barras,
+            titulo,
+            autor,
+            editora,
+            created_at,
+            operador_nome,
+            genero:genero-id(id, nome)
+        """)
         
+        # Aplicar filtro de busca
+        if tipo_busca == "titulo":
+            query = query.ilike('titulo', f'%{termo_busca}%')
+        else:
+            query = query.eq('codigo_barras', termo_busca)
+        
+        # Filtrar por operador se solicitado
+        if filtrar_por_operador:
+            operador_atual = get_operador_nome()
+            query = query.eq('operador_nome', operador_atual)
+        
+        response = query.execute()
         return response.data if response.data else []
     except Exception as e:
         st.error(f"Erro ao buscar livros: {e}")
@@ -92,7 +104,7 @@ st.markdown("---")
 # Seção de busca
 st.header("🔍 Buscar Livro")
 
-col1, col2 = st.columns([3, 1])
+col1, col2, col3 = st.columns([3, 1, 1])
 
 with col1:
     termo_busca = st.text_input(
@@ -108,10 +120,18 @@ with col2:
         format_func=lambda x: "Título" if x == "titulo" else "Código de Barras"
     )
 
+with col3:
+    filtrar_operador = st.checkbox(
+        "Apenas meus livros",
+        value=True,
+        help="Marque para ver apenas os livros catalogados por você"
+    )
+
 if st.button("🔍 Buscar", type="primary"):
     if termo_busca:
-        st.session_state.resultados_busca = buscar_livros(termo_busca, tipo_busca)
+        st.session_state.resultados_busca = buscar_livros(termo_busca, tipo_busca, filtrar_operador)
         st.session_state.termo_buscado = termo_busca
+        st.session_state.filtrou_operador = filtrar_operador
     else:
         st.warning("Por favor, digite um termo de busca.")
 
@@ -119,7 +139,12 @@ if st.button("🔍 Buscar", type="primary"):
 if 'resultados_busca' in st.session_state and st.session_state.resultados_busca:
     st.markdown("---")
     st.subheader(f"📚 Resultados da Busca: '{st.session_state.termo_buscado}'")
-    st.info(f"**{len(st.session_state.resultados_busca)}** livro(s) encontrado(s)")
+    
+    # Mostrar informação sobre o filtro
+    if st.session_state.get('filtrou_operador', False):
+        st.info(f"**{len(st.session_state.resultados_busca)}** livro(s) encontrado(s) **catalogados por você** ({get_operador_nome()})")
+    else:
+        st.info(f"**{len(st.session_state.resultados_busca)}** livro(s) encontrado(s) (todos os operadores)")
     
     for idx, livro in enumerate(st.session_state.resultados_busca):
         genero_nome = livro.get('genero', {}).get('nome', 'N/A') if livro.get('genero') else 'N/A'

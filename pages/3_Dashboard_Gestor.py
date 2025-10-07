@@ -4,6 +4,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import sys
+import os
+
+# Adicionar o diretório pai ao path para importar utils_auth
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils_auth import check_login, get_operador_nome, show_user_info
 
 # Configuração da página
 st.set_page_config(
@@ -11,6 +17,13 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
+
+# Verificar login
+if not check_login():
+    st.stop()
+
+# Mostrar info do usuário
+show_user_info()
 
 # Inicializar cliente Supabase
 @st.cache_resource
@@ -141,14 +154,21 @@ with col4:
     # Média diária (últimos 7 dias)
     df_livros = get_dados_livros()
     if not df_livros.empty and 'created_at' in df_livros.columns:
-        sete_dias_atras = datetime.now() - timedelta(days=7)
-        livros_7_dias = df_livros[df_livros['created_at'] >= sete_dias_atras]
-        media_diaria = len(livros_7_dias) / 7
-        st.metric(
-            label="📊 Média Diária (7d)",
-            value=f"{media_diaria:.1f}",
-            help="Média de livros catalogados por dia nos últimos 7 dias"
-        )
+        try:
+            # Garantir que created_at é datetime
+            if not pd.api.types.is_datetime64_any_dtype(df_livros['created_at']):
+                df_livros['created_at'] = pd.to_datetime(df_livros['created_at'])
+            
+            sete_dias_atras = pd.Timestamp(datetime.now() - timedelta(days=7))
+            livros_7_dias = df_livros[df_livros['created_at'] >= sete_dias_atras]
+            media_diaria = len(livros_7_dias) / 7
+            st.metric(
+                label="📊 Média Diária (7d)",
+                value=f"{media_diaria:.1f}",
+                help="Média de livros catalogados por dia nos últimos 7 dias"
+            )
+        except Exception as e:
+            st.metric(label="📊 Média Diária (7d)", value="0")
     else:
         st.metric(label="📊 Média Diária (7d)", value="0")
 

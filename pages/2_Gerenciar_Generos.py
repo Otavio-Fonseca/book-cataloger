@@ -1,6 +1,12 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
+import sys
+import os
+
+# Adicionar o diretório pai ao path para importar utils_auth
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils_auth import check_login, get_operador_nome, show_user_info
 
 # Configuração da página
 st.set_page_config(
@@ -8,6 +14,13 @@ st.set_page_config(
     page_icon="📚",
     layout="wide"
 )
+
+# Verificar login
+if not check_login():
+    st.stop()
+
+# Mostrar info do usuário
+show_user_info()
 
 # Inicializar cliente Supabase
 @st.cache_resource

@@ -17,6 +17,7 @@ import openai
 import json
 import configparser
 from supabase import create_client, Client
+from utils_auth import check_login, get_operador_nome, show_user_info
 
 # Inicializar cliente Supabase
 try:
@@ -763,7 +764,10 @@ def save_to_csv(data, quantity=1):
             st.error("Não foi possível salvar: falha ao processar o gênero.")
             return False
         
-        # 2. Prepara uma lista de dicionários para inserção
+        # 2. Obter nome do operador logado
+        operador_nome = get_operador_nome()
+        
+        # 3. Prepara uma lista de dicionários para inserção
         # O campo 'created_at' é preenchido automaticamente pelo Supabase
         registros_para_inserir = []
         for _ in range(quantity):
@@ -772,20 +776,21 @@ def save_to_csv(data, quantity=1):
                 'titulo': data['title'],
                 'autor': data['author'],
                 'editora': data['publisher'],
-                'genero-id': genero_id
+                'genero-id': genero_id,
+                'operador_nome': operador_nome
                 # created_at será preenchido automaticamente
             }
             registros_para_inserir.append(novo_registro)
 
-        # 3. Insere a lista de registros na tabela 'livro'
+        # 4. Insere a lista de registros na tabela 'livro'
         response = supabase.table('livro').insert(registros_para_inserir).execute()
 
-        # 4. Verificação de erro
+        # 5. Verificação de erro
         if not response.data:
             st.error("Falha ao salvar os dados no Supabase.")
             return False
         
-        # 5. Invalida o cache após salvar
+        # 6. Invalida o cache após salvar
         load_catalog_data.clear()
         return True
 
@@ -974,6 +979,13 @@ def search_additional_context(book_data):
 
 # Interface principal
 def main():
+    # Verificar login antes de qualquer coisa
+    if not check_login():
+        st.stop()
+    
+    # Mostrar informações do usuário na sidebar
+    show_user_info()
+    
     st.title("📚 Catalogação de Livros - Código de Barras")
     st.markdown("---")
     
@@ -993,14 +1005,11 @@ def main():
     if "from_local" not in st.session_state:
         st.session_state.from_local = False
     
-    # Sidebar para navegação
+    # Sidebar para navegação (menu simplificado)
     with st.sidebar:
-        st.header("📋 Menu")
+        st.header("📋 Opções")
         page = st.selectbox("Escolha uma opção:", [
-            "📷 Capturar Código de Barras",
-            "🔍 Buscar Livros",
-            "📊 Visualizar Catálogo",
-            "📥 Download CSV",
+            "📷 Catalogar Livros",
             "⚙️ Configurações"
         ])
     
@@ -1235,7 +1244,7 @@ def main():
         
         return
     
-    if page == "📷 Capturar Código de Barras":
+    if page == "📷 Catalogar Livros":
         st.header("📷 Catalogação de Livros")
         
         # Input manual como método padrão
@@ -1678,191 +1687,6 @@ def main():
                             del st.session_state[key]
                     st.rerun()
     
-    elif page == "🔍 Buscar Livros":
-        st.header("🔍 Busca Inteligente de Livros")
-        st.info("Use esta ferramenta para encontrar livros no catálogo local usando busca inteligente e auto-complete.")
-        
-        # Opções de busca
-        search_type = st.radio(
-            "Tipo de busca:",
-            ["📚 Por Título", "✍️ Por Autor", "🏢 Por Editora", "📖 Por Gênero"]
-        )
-        
-        if search_type == "📚 Por Título":
-            st.subheader("Busca por Título")
-            search_query = st.text_input("Digite o título do livro:", placeholder="Digite parte do título...")
-            
-            if search_query:
-                # Auto-complete em tempo real
-                suggestions = get_autocomplete_suggestions(search_query, "Titulo")
-                if suggestions:
-                    st.markdown("#### 💡 Sugestões:")
-                    for i, suggestion in enumerate(suggestions):
-                        if st.button(f"📚 {suggestion['text']}", key=f"title_suggest_{i}_{suggestion['data']['Codigo_Barras']}"):
-                            st.session_state.search_result = suggestion['data']
-                            st.rerun()
-                
-                # Busca por similaridade
-                similar_books = find_similar_books(search_query, "Titulo", 0.5)
-                if similar_books:
-                    st.markdown("#### 📖 Resultados da Busca:")
-                    for i, book in enumerate(similar_books):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"📚 **{book['data']['Titulo']}** (Similaridade: {book['similarity']:.2f})")
-                            st.write(f"✍️ Autor: {book['data']['Autor']}")
-                            st.write(f"🏢 Editora: {book['data']['Editora']}")
-                        with col2:
-                            if st.button(f"➕ Adicionar Cópia", key=f"add_search_{i}_{book['data']['Codigo_Barras']}"):
-                                save_to_csv(book["data"], quantity=1)
-                                st.success(f"Cópia adicionada!")
-                                load_catalog_data.clear()
-                                st.rerun()
-        
-        elif search_type == "✍️ Por Autor":
-            st.subheader("Busca por Autor")
-            search_query = st.text_input("Digite o nome do autor:", placeholder="Digite parte do nome...")
-            
-            if search_query:
-                suggestions = get_autocomplete_suggestions(search_query, "Autor")
-                if suggestions:
-                    st.markdown("#### 💡 Sugestões:")
-                    for i, suggestion in enumerate(suggestions):
-                        if st.button(f"✍️ {suggestion['text']}", key=f"author_suggest_{i}_{suggestion['data']['Codigo_Barras']}"):
-                            st.session_state.search_result = suggestion['data']
-                            st.rerun()
-                
-                similar_books = find_similar_books(search_query, "Autor", 0.6)
-                if similar_books:
-                    st.markdown("#### 📖 Livros do Autor:")
-                    for i, book in enumerate(similar_books):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"📚 **{book['data']['Titulo']}**")
-                            st.write(f"✍️ Autor: {book['data']['Autor']}")
-                        with col2:
-                            if st.button(f"➕ Adicionar Cópia", key=f"add_author_{i}_{book['data']['Codigo_Barras']}"):
-                                save_to_csv(book["data"], quantity=1)
-                                st.success(f"Cópia adicionada!")
-                                load_catalog_data.clear()
-                                st.rerun()
-        
-        elif search_type == "🏢 Por Editora":
-            st.subheader("Busca por Editora")
-            search_query = st.text_input("Digite o nome da editora:", placeholder="Digite parte do nome...")
-            
-            if search_query:
-                suggestions = get_autocomplete_suggestions(search_query, "Editora")
-                if suggestions:
-                    st.markdown("#### 💡 Sugestões:")
-                    for i, suggestion in enumerate(suggestions):
-                        if st.button(f"🏢 {suggestion['text']}", key=f"publisher_suggest_{i}_{suggestion['data']['Codigo_Barras']}"):
-                            st.session_state.search_result = suggestion['data']
-                            st.rerun()
-                
-                similar_books = find_similar_books(search_query, "Editora", 0.6)
-                if similar_books:
-                    st.markdown("#### 📖 Livros da Editora:")
-                    for i, book in enumerate(similar_books):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"📚 **{book['data']['Titulo']}**")
-                            st.write(f"🏢 Editora: {book['data']['Editora']}")
-                        with col2:
-                            if st.button(f"➕ Adicionar Cópia", key=f"add_publisher_{i}_{book['data']['Codigo_Barras']}"):
-                                save_to_csv(book["data"], quantity=1)
-                                st.success(f"Cópia adicionada!")
-                                load_catalog_data.clear()
-                                st.rerun()
-        
-        elif search_type == "📖 Por Gênero":
-            st.subheader("Busca por Gênero")
-            search_query = st.text_input("Digite o gênero:", placeholder="Digite parte do gênero...")
-            
-            if search_query:
-                suggestions = get_autocomplete_suggestions(search_query, "Genero")
-                if suggestions:
-                    st.markdown("#### 💡 Sugestões:")
-                    for i, suggestion in enumerate(suggestions):
-                        if st.button(f"📖 {suggestion['text']}", key=f"genre_suggest_{i}_{suggestion['data']['Codigo_Barras']}"):
-                            st.session_state.search_result = suggestion['data']
-                            st.rerun()
-                
-                similar_books = find_similar_books(search_query, "Genero", 0.6)
-                if similar_books:
-                    st.markdown("#### 📖 Livros do Gênero:")
-                    for i, book in enumerate(similar_books):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"📚 **{book['data']['Titulo']}**")
-                            st.write(f"📖 Gênero: {book['data']['Genero']}")
-                        with col2:
-                            if st.button(f"➕ Adicionar Cópia", key=f"add_genre_{i}_{book['data']['Codigo_Barras']}"):
-                                save_to_csv(book["data"], quantity=1)
-                                st.success(f"Cópia adicionada!")
-                                load_catalog_data.clear()
-                                st.rerun()
-        
-        # Mostrar resultado selecionado
-        if "search_result" in st.session_state:
-            st.markdown("---")
-            st.markdown("### 📋 Livro Selecionado:")
-            result = st.session_state.search_result
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.write(f"📚 **Título:** {result['Titulo']}")
-                st.write(f"✍️ **Autor:** {result['Autor']}")
-                st.write(f"🏢 **Editora:** {result['Editora']}")
-                st.write(f"📖 **Gênero:** {result['Genero']}")
-                st.write(f"🔢 **Código de Barras:** {result['Codigo_Barras']}")
-            with col2:
-                if st.button("➕ Adicionar Cópia"):
-                    save_to_csv(result, quantity=1)
-                    st.success("Cópia adicionada!")
-                    load_catalog_data.clear()
-                    st.rerun()
-                if st.button("🗑️ Limpar Seleção"):
-                    del st.session_state.search_result
-                    st.rerun()
-    
-    elif page == "📊 Visualizar Catálogo":
-        st.header("📊 Catálogo de Livros")
-        df_catalog = load_catalog_data()
-        
-        if not df_catalog.empty:
-            st.dataframe(df_catalog)
-            st.markdown(f"**Total de livros catalogados:** {len(df_catalog)}")
-            
-            # Estatísticas básicas
-            st.subheader("Estatísticas Rápidas")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Autores Únicos", df_catalog["Autor"].nunique())
-            with col2:
-                st.metric("Editoras Únicas", df_catalog["Editora"].nunique())
-            with col3:
-                st.metric("Gêneros Únicos", df_catalog["Genero"].nunique())
-            
-            st.subheader("Livros Mais Frequentes")
-            st.dataframe(df_catalog["Titulo"].value_counts().head(10))
-            
-        else:
-            st.info("O catálogo está vazio. Comece a catalogar livros na aba 'Capturar Código de Barras'.")
-    
-    elif page == "📥 Download CSV":
-        st.header("📥 Download do Catálogo CSV")
-        df_catalog = load_catalog_data()
-        
-        if not df_catalog.empty:
-            csv_output = df_catalog.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Baixar catalogo_livros.csv",
-                data=csv_output,
-                file_name="catalogo_livros.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info("O catálogo está vazio. Não há dados para baixar.")
 
 if __name__ == "__main__":
     main()
